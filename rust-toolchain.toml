@@ -1,0 +1,6 @@
+[toolchain]
+# CyberLexi 锁定 MSVC 工具链（gpui-kit Windows 要求）。
+# 注：1.99.1 无独立 dist 包，锁定 stable 通道；本仓库开发时快照为
+# rustc 1.99.1 (58cf8f9c 2026-10-13)，详见 README「风险与应对」。
+channel = "stable"
+profile = "minimal"

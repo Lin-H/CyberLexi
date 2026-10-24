@@ -1,0 +1,17 @@
+# Build
+/target
+
+# 用户可写数据目录（便携模式），绝不入库
+/data/
+config.toml
+
+# 运行期产物
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+/export/
+/logs/
+/audio/
+
+# 本地实验
+/tmp/

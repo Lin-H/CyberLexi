@@ -1,0 +1,19 @@
+[package]
+name = "lexi-ui"
+description = "CyberLexi GPUI frontend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cyberlexi"
+path = "src/main.rs"
+
+[dependencies]
+lexi-core = { path = "../lexi-core" }
+gpui-kit = "0.8.0"
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+smol = "2"
