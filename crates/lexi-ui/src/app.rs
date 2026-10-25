@@ -44,6 +44,12 @@ pub struct AppView {
     pub dict_counts: (i64, i64),
     /// 本地 TTS 英语声音（启动枚举；MW 录音不足 3 个时补足发音按钮）
     pub tts_voices: Vec<String>,
+    /// 词条后退导航栈（最近展示的词，栈顶=最近；返回时弹出重查）
+    pub nav_history: Vec<String>,
+    /// 返回触发的重查不再入栈
+    nav_backing: bool,
+    /// 当前展示的词（Entry 完成时更新；NotFound/候选列表不变）
+    current_word: Option<String>,
     /// 配置镜像（worker 权威；ConfigSaved 回流刷新）
     pub cfg: Config,
     /// 强调色板（cfg.appearance.accent 派生）
@@ -131,6 +137,9 @@ impl AppView {
             stats: (0, 20, 0),
             dict_counts: (0, 0),
             tts_voices: Vec::new(),
+            nav_history: Vec::new(),
+            nav_backing: false,
+            current_word: None,
             cfg: Config::default(),
             accent: AccentPalette::Cyan,
             book_filter: crate::book_view::BookFilter::All,
@@ -169,6 +178,20 @@ impl AppView {
         cx.notify();
     }
 
+    /// 返回上一个词：弹出导航栈顶并重查（该次查询不入栈），
+    /// 同时把搜索框文本同步为目标词。
+    pub fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(word) = self.nav_history.pop() else {
+            return;
+        };
+        self.nav_backing = true;
+        let input = self.input.clone();
+        input.update(cx, |s, cx| {
+            s.set_value(word.clone(), window, cx);
+        });
+        self.dispatch_query(word, cx);
+    }
+
     pub fn dispatch_detail(&mut self, word: String, cx: &mut Context<Self>) {
         self.loading = true;
         let _ = self.cmd_tx.send(UiCommand::QueryDetail(word));
@@ -184,8 +207,20 @@ impl AppView {
 
     fn on_backend_event(&mut self, ev: BackendEvent, cx: &mut Context<Self>) {
         match ev {
-            BackendEvent::QueryStarted(_) => {
+            BackendEvent::QueryStarted(input) => {
                 self.loading = true;
+                // 后退导航：返回触发的重查不入栈；普通查询把当前词
+                // 压栈（与栈顶/新查询相同则跳过，上限 50）
+                if self.nav_backing {
+                    self.nav_backing = false;
+                } else if let Some(cur) = self.current_word.clone() {
+                    if cur != input && self.nav_history.last() != Some(&cur) {
+                        self.nav_history.push(cur);
+                        if self.nav_history.len() > 50 {
+                            self.nav_history.remove(0);
+                        }
+                    }
+                }
             }
             BackendEvent::QueryFinished { result, .. } => {
                 self.loading = false;
@@ -199,6 +234,9 @@ impl AppView {
                             });
                         }
                     }
+                }
+                if let QueryResult::Entry(entry) = &*result {
+                    self.current_word = Some(entry.headword_display.clone());
                 }
                 self.result = Some(*result);
             }

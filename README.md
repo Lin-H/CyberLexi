@@ -20,7 +20,7 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
 ## 界面（对照设计稿）
 
 - **侧边栏**：品牌区、词典/单词本/设置导航（选中态霓虹描边 + 左缘指示条）、底部统计（今日查词目标 + 连续打卡，来自 history 表 UTC 日聚合）
-- **顶栏**：搜索框（焦点青光圈、`Ctrl K` 聚焦、300ms 防抖 + Enter 立即查）、MW 配额 chip、离线指示、随机单词（ECDICT 高频前 20k 随机）、历史弹层（最近 50 条点击即查）、首启导入进度细条
+- **顶栏**：搜索框（焦点青光圈、`Ctrl K` 聚焦、300ms 防抖 + Enter 立即查）、**返回上一词按钮**（搜索框右侧；导航栈 ≤50，覆盖搜索/词干/短语/派生等一切跳转，返回时搜索框文本同步）、MW 配额 chip、离线指示、随机单词（ECDICT 高频前 20k 随机）、历史弹层（最近 50 条点击即查）、首启导入进度细条
 - **词典视图**：headword + homograph 上标 + 播放/收藏圆钮、MW/IPA 双音标（psl 音标标签）+ 多人声发音按钮（**≤3 个**：MW 录音变体（词头 + 义项内嵌 dt 录音，青色序号）优先，不足时本地 TTS 人声补足（Windows SAPI，紫罗兰字母徽标；启动时枚举 en-* 声音））、变体拼写（vrs）/备选词头（ahws）chips、派生词条行内播放自己的录音、词性/考试/常用度标签、meta 信息条（SRC/SECTION/SORT/ID）、sense 卡片（强调色轮转、MW sn 原生编号（"1 a"＝顶级大数字+小字母、裸字母＝归属当前 division、"(x)"＝子义项）、**义项层级缩进**（0/1/2 级）、**sense 级词性**（MW def[].fl，同形词名词/动词义项各自标注；ECDICT 离线链解析行首 n./vt. 标注）、vd 动词分隔行（及物/不及物）、sls/lbs 斜体标签、sgram [T/I] 标记、sense 级屈折、uns/snote 说明块、called also 别名、ri/bnw 并入释义文本、vis 例句带 aq 出处、sdsense 子块 ↳）、**Phrases · 相关短语**区块（短语词条（如 remain to be seen）独立于义项展示，点击即查）、**Run-On Phrases · 派生短语**区块（dros，如 abide by，自带编号释义与例句，点击即查）、交叉引用 chips（cxs + dxnls 方向性参见）、**Synonym Discussion · 同义词辨析**（syns）与 **Usage Notes · 用法讨论**（usages）区块、**Quotations · 引文例句**（quotes，带作者/出处/年代）、词源/屈折（il 标签 + if/ifc）/派生（uros 标签与例句）/首见年代、右侧信息栏（插图 art（artid + 图注）/ 参考表格 table / shortdef / stems（可点击）/ 中文释义（全量行）/ 词频档案 / 学习档案）——**MW Collegiate 文档 §2.1–2.29 字段全量覆盖**（仅 meta.uuid 内部 ID 与 ld_link Web 导航链接不展示）
 - **单词本视图**：四态筛选（全部/生词/学习中/熟悉/已掌握 + 计数）、卡片网格（左缘强调色、音标、释义、掌握度进度条）、添加单词行、卡片内状态流转/移除
 - **设置视图**：外观（主题色板 cyan/magenta/violet 即改即存、扫描线开关、网格开关）、发音（自动发音、语速 0.75/1.0/1.25×——rodio `Source::speed`）、数据（MW Key、缓存 TTL/上限、词库计数与强制重导、数据目录/导出/导入/配额重置）

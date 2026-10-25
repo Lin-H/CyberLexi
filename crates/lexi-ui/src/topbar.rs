@@ -8,7 +8,7 @@ use gpui_kit::component::Sizable;
 use gpui_kit::*;
 
 use crate::app::AppView;
-use crate::theme::{grad, hex, with_alpha, Neon};
+use crate::theme::{grad, hex, steel, with_alpha, Neon};
 use crate::widgets::{icon_button, kbd};
 
 pub fn render(view: &mut AppView, window: &mut Window, cx: &mut Context<AppView>) -> Div {
@@ -29,7 +29,9 @@ pub fn render(view: &mut AppView, window: &mut Window, cx: &mut Context<AppView>
         .bg(with_alpha(Neon::bg(), 0.55))
         .border_b_1()
         .border_color(with_alpha(Neon::cyan(), 0.09))
-        .child(search_box(view, focused, cx));
+        .child(search_box(view, focused, cx))
+        // 返回上一词（导航栈空时置灰）
+        .child(back_button(view, cx));
 
     bar = bar.child(div().flex_1());
 
@@ -101,6 +103,48 @@ pub fn render(view: &mut AppView, window: &mut Window, cx: &mut Context<AppView>
     }
     // 历史弹层由 app.rs 在根层渲染（避免被后绘制的内容视图遮挡）
     bar
+}
+
+/// 返回上一词按钮（搜索框右侧）：栈空置灰不可点；有历史时高亮。
+fn back_button(view: &AppView, cx: &mut Context<AppView>) -> Stateful<Div> {
+    let enabled = !view.nav_history.is_empty();
+    let accent = view.accent.color();
+    let mut btn = div()
+        .id("btn-back")
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .w(px(34.))
+        .h(px(34.))
+        .rounded_full()
+        .border_1()
+        .text_color(if enabled {
+            accent
+        } else {
+            Neon::faint()
+        })
+        .border_color(if enabled {
+            with_alpha(accent, 0.35)
+        } else {
+            steel(0.12)
+        });
+    if enabled {
+        btn = btn
+            .cursor_pointer()
+            .bg(with_alpha(accent, 0.06))
+            .hover(|d| {
+                d.bg(with_alpha(accent, 0.16))
+                    .shadow(vec![crate::theme::glow(accent, 0.4, 14.)])
+            })
+            .on_click(cx.listener(|v, _, window, cx| {
+                v.go_back(window, cx);
+            }))
+            .child(Icon::new(IconName::ArrowLeft).with_size(px(15.)));
+    } else {
+        btn = btn.child(Icon::new(IconName::ArrowLeft).with_size(px(15.)));
+    }
+    btn
 }
 
 fn search_box(view: &mut AppView, focused: bool, _cx: &mut Context<AppView>) -> Div {

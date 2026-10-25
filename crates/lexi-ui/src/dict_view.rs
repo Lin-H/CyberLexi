@@ -549,7 +549,7 @@ fn body(entry: &MergedEntry) -> Div {
                                 .child(dro.fl.to_uppercase()),
                         ),
                 );
-            for (si, s) in dro.senses.iter().enumerate() {
+            for s in dro.senses.iter() {
                 let sn = s.sn.clone().unwrap_or_default();
                 let mut line = div().flex().gap(px(8.)).min_w_0();
                 if !sn.is_empty() {
