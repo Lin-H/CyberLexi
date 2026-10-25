@@ -46,15 +46,19 @@ fn render_entry(entry: &MergedEntry, view: &mut AppView, cx: &mut Context<AppVie
 
     div()
         .flex()
+        .flex_col()
         .gap(px(26.))
         .max_w(px(1300.))
-        // ── 主列 ──
+        // ── 单词信息（hero 独占一行：词头/发音/音标/标签）──
+        .child(hero(entry, in_wordbook, &view.tts_voices, cx))
+        // ── 释义区（左）+ 右侧信息栏（右），自 hero 下方开始 ──
         .child(
-            div().flex_1().min_w_0().flex().flex_col().child(hero(entry, in_wordbook, &view.tts_voices, cx))
-                .child(body(entry)),
+            div()
+                .flex()
+                .gap(px(26.))
+                .child(div().flex_1().min_w_0().child(body(entry)))
+                .child(aside(entry, wb_item.as_ref())),
         )
-        // ── 右侧信息栏 ──
-        .child(aside(entry, wb_item.as_ref()))
 }
 
 fn hero(entry: &MergedEntry, in_wordbook: bool, tts_voices: &[String], _cx: &mut Context<AppView>) -> Div {
