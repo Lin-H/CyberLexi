@@ -52,6 +52,7 @@ bash scripts/fetch_assets.sh    # 离线词库资源再生成
 
 ## 事件与状态规则
 
+- **日志策略**：文件日志仅 debug 构建启用（`worker::init_tracing` 与 `AppPaths::resolve` 的 logs 目录创建均按 `debug_assertions` 分流）；release 零日志零控制台（`windows_subsystem = "windows"`），tracing 调用退化为空操作
 - `BackendEvent::ConfigSaved`：首个是 worker 启动广播（静默应用，不弹 toast）；之后每次都来自设置页真实保存（弹「配置已保存」）
 - 配额：`MwClient` 内 UTC 日计数，`roll_day` 在每次 lookup 前跨午夜滚动；403=Key 无效、429=限流熔断（响应形态待实测）
 - 导航栈：`QueryStarted` 且非返回触发时把当前展示词压栈（去重、≤50）；`go_back` 弹栈 + `InputState::set_value` 同步搜索框

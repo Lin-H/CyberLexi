@@ -50,7 +50,7 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
   - `assets/dict/cedict.txt` — CC-CEDICT（CC BY-SA 4.0，MDBG 官方导出）
   - `assets/fonts/` — JetBrains Mono + Noto Sans SC（均 OFL）；界面字体为系统 "Segoe UI"，图标为 gpui-kit-assets 内嵌 Lucide（编译期打入二进制，无需本地文件）
 - 可写数据目录：优先 exe 旁 `data/`（便携模式），无权限时回退 `%LOCALAPPDATA%/com.cyberlexi/`
-  - `db/lexi.sqlite`（缓存 + 单词本 + 离线词库 + FTS5）、`audio/`、`config.toml`（**gitignored**，MW API Key）、`logs/`、`export/`
+  - `db/lexi.sqlite`（缓存 + 单词本 + 离线词库 + FTS5）、`audio/`、`config.toml`（**gitignored**，MW API Key）、`export/`；`logs/` 仅调试构建存在（发布版零日志，无控制台窗口）
 - 迁移：设置页「导出/导入数据包」zip 整个数据目录（含音频缓存与配置）
 
 ## Merriam-Webster API

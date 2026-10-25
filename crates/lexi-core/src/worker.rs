@@ -70,6 +70,9 @@ fn run(
     rt.block_on(serve(paths, db, meta, cfg, &mut cmd_rx, event_tx))
 }
 
+/// 日志仅调试构建启用：文件滚动日志服务于开发排障；发布版零日志
+/// （无控制台窗口也无日志文件，tracing 调用退化为空操作）。
+#[cfg(debug_assertions)]
 fn init_tracing(paths: &AppPaths) -> anyhow::Result<()> {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -88,6 +91,11 @@ fn init_tracing(paths: &AppPaths) -> anyhow::Result<()> {
         )
         .try_init()
         .ok();
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn init_tracing(_paths: &AppPaths) -> anyhow::Result<()> {
     Ok(())
 }
 

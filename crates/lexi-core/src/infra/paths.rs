@@ -47,10 +47,14 @@ impl AppPaths {
         let assets_dir = locate_assets(exe_dir.as_deref())
             .context("assets/ 目录未找到（应与 exe 同级分发；dev 下须在仓库根构建）")?;
 
-        for sub in ["db", "audio", "logs", "export"] {
+        for sub in ["db", "audio", "export"] {
             std::fs::create_dir_all(data_dir.join(sub))
                 .with_context(|| format!("create {}", data_dir.join(sub).display()))?;
         }
+        // 日志目录仅调试构建需要（发布版零日志，见 worker::init_tracing）
+        #[cfg(debug_assertions)]
+        std::fs::create_dir_all(data_dir.join("logs"))
+            .with_context(|| format!("create {}", data_dir.join("logs").display()))?;
         Ok(AppPaths { data_dir, assets_dir })
     }
 

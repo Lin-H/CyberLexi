@@ -73,8 +73,9 @@ actions!(cyberlexi, [FocusSearch]);
 
 fn main() -> anyhow::Result<()> {
     let paths = AppPaths::resolve()?;
-    // panic 落日志文件（发布版无控制台，stderr 不可见；worker 线程
-    // 稍后初始化文件日志，之前的 panic 会静默丢弃——可接受）
+    // panic 落日志文件（仅 debug：release 无日志，钩子不设——
+    // 日志策略见 worker::init_tracing）
+    #[cfg(debug_assertions)]
     std::panic::set_hook(Box::new(|info| {
         let loc = info
             .location()
