@@ -99,11 +99,7 @@ pub fn render(view: &mut AppView, window: &mut Window, cx: &mut Context<AppView>
                 .shadow(vec![crate::theme::glow(Neon::cyan(), 0.6, 8.)]),
         );
     }
-
-    // 历史弹层（absolute 挂在 topbar 之下）
-    if view.history_open {
-        bar = bar.child(history_popover(view, cx));
-    }
+    // 历史弹层由 app.rs 在根层渲染（避免被后绘制的内容视图遮挡）
     bar
 }
 
@@ -157,7 +153,7 @@ fn search_box(view: &mut AppView, focused: bool, _cx: &mut Context<AppView>) -> 
         })
 }
 
-fn history_popover(view: &mut AppView, cx: &mut Context<AppView>) -> Stateful<Div> {
+pub fn history_popover(view: &mut AppView, cx: &mut Context<AppView>) -> Stateful<Div> {
     let mut pop = div()
         .absolute()
         .top(px(76.))

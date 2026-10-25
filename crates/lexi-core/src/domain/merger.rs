@@ -11,6 +11,41 @@ use super::types::{EcdictRecord, MergedEntry, MwEntry, Sense, SourceTag};
 #[derive(Default)]
 pub struct ResultMerger;
 
+/// ECDICT 中文行行首词性（"n. 测试…"）→ (完整词性, 去前缀文本)。
+/// 无法识别时返回 (None, 原文)。
+fn split_ecdict_pos(line: &str) -> (Option<String>, String) {
+    let t = line.trim();
+    let Some((head, rest)) = t.split_once('.') else {
+        return (None, t.to_string());
+    };
+    let head = head.trim();
+    let lower = head.to_ascii_lowercase();
+    let full = match lower.as_str() {
+        "n" => "noun",
+        "v" | "vt" | "vi" => "verb",
+        "a" | "adj" => "adjective",
+        "ad" | "adv" => "adverb",
+        "prep" => "preposition",
+        "conj" => "conjunction",
+        "pron" => "pronoun",
+        "art" => "article",
+        "num" => "numeral",
+        "int" => "interjection",
+        "aux" => "auxiliary",
+        _ => return (None, t.to_string()),
+    };
+    // head 必须是纯 ASCII 字母缩写（排除 "e.g." 或普通句中句点）
+    if !head.chars().all(|c| c.is_ascii_alphabetic()) || head.is_empty() {
+        return (None, t.to_string());
+    }
+    let body = rest.trim();
+    if body.is_empty() {
+        (None, t.to_string())
+    } else {
+        (Some(full.to_string()), body.to_string())
+    }
+}
+
 impl ResultMerger {
     pub fn new() -> Self {
         Self
@@ -75,18 +110,23 @@ impl ResultMerger {
             _ => Vec::new(),
         };
 
-        // 释义序列：MW sseq 展开；无 MW 时把 ECDICT 中文行包装为 senses（无例句）
+        // 释义序列：MW sseq 展开；无 MW 时把 ECDICT 中文行包装为 senses
+        //（无例句；行首词性标注如 "n." / "vt." 解析为 sense 级词性并剥前缀）
         let senses: Vec<Sense> = match (&mw, &ecdict) {
             (Some(m), _) if !m.senses.is_empty() => m.senses.clone(),
             (_, Some(e)) if !e.translation.is_empty() => e
                 .translation_lines()
                 .into_iter()
                 .enumerate()
-                .map(|(i, text)| Sense {
-                    sn: Some((i + 1).to_string()),
-                    text,
-                    examples: Vec::new(),
-                    subsenses: Vec::new(),
+                .map(|(i, text)| {
+                    let (pos, body) = split_ecdict_pos(&text);
+                    Sense {
+                        sn: Some((i + 1).to_string()),
+                        pos,
+                        text: body,
+                        examples: Vec::new(),
+                        subsenses: Vec::new(),
+                    }
                 })
                 .collect(),
             _ => Vec::new(),
@@ -236,6 +276,24 @@ mod tests {
         assert!(!m.short_defs.is_empty());
         assert!(m.short_defs[0].contains("多卷的"));
         assert_eq!(m.etymology, None);
+    }
+
+    #[test]
+    fn ecdict_lines_carry_parsed_pos() {
+        let mut e = ecdict();
+        e.translation = "n. 庞然大物\\nvt. 使成卷\\nvi. 变成卷".into();
+        let m = ResultMerger::new().merge(None, Some(e), "voluminous");
+        let poses: Vec<&str> = m.senses.iter().map(|s| s.pos.as_deref().unwrap_or("")).collect();
+        assert_eq!(poses, vec!["noun", "verb", "verb"]);
+        // 前缀已剥离
+        assert_eq!(m.senses[0].text, "庞然大物");
+        assert_eq!(m.senses[1].text, "使成卷");
+        // 无词性行保持原样
+        let mut e2 = ecdict();
+        e2.translation = "无前缀行".into();
+        let m2 = ResultMerger::new().merge(None, Some(e2), "w");
+        assert_eq!(m2.senses[0].pos, None);
+        assert_eq!(m2.senses[0].text, "无前缀行");
     }
 
     #[test]

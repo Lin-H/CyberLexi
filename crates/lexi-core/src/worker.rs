@@ -343,6 +343,11 @@ fn spawn_query(
                 });
                 let _ = etx.send(BackendEvent::HistoryChanged(history.recent().unwrap_or_default()));
                 push_stats(&history, &etx, now_secs());
+                // MW 实际消耗时刷新配额 chip（缓存命中时计数不变，推送无害）
+                if let Some(client) = orch.mw_client().await {
+                    let (used, limit) = client.quota();
+                    let _ = etx.send(BackendEvent::Quota { used, limit });
+                }
             }
             Err(e) => {
                 tracing::error!(error = %e, "query failed");

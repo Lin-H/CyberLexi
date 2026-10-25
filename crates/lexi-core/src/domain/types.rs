@@ -56,6 +56,10 @@ impl SourceTag {
 pub struct Sense {
     /// sense number，如 "1 a" / "(2)"
     pub sn: Option<String>,
+    /// 本 sense 所属 def 块的词性（MW def[].fl；多词性词条各块不同，
+    /// 如 test 名词条与动词条）。缺省回退 entry 级 fl。
+    #[serde(default)]
+    pub pos: Option<String>,
     /// 定义文本（MW markup 已转纯文本）
     pub text: String,
     /// verbal illustrations 例句（markup 已转纯文本）

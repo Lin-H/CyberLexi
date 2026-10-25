@@ -6,4 +6,4 @@ pub mod markup;
 pub mod parser;
 
 pub use client::{MwClient, MwError, MwHttpClient};
-pub use parser::{parse_body, MwResponse};
+pub use parser::{parse_body, parse_cached_entry, MwResponse};

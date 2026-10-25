@@ -1,8 +1,8 @@
-# CyberLexi（NEONLEX）
+# CyberLexi
 
 个人桌面端英汉词典（Phase 1 MVP）。Rust 2024 + GPUI（经 gpui-kit）+ rusqlite（FTS5）+ tokio 后台运行时。Windows 首发平台。
 
-界面为 NEONLEX 赛博朋克设计（设计稿：`docs/cyberpunk ui.html`）：侧边栏导航 + 顶栏搜索 + 词典/单词本/设置三视图、扫描线/网格/氛围光特效层、MW 全字段词条布局（sense 卡片 / 词源 / 词形 / 派生 / 右侧信息栏）。
+界面按赛博朋克设计稿（`docs/cyberpunk ui.html`）实现：侧边栏导航 + 顶栏搜索 + 词典/单词本/设置三视图、扫描线/网格/氛围光特效层、MW 全字段词条布局（sense 卡片按义项层级缩进 / 词源 / 词形 / 派生 / 右侧信息栏）。
 
 ## 构建要求（Windows）
 
@@ -13,7 +13,7 @@
 
 ```powershell
 cargo run -p lexi-ui            # 开发运行（dev 构建已实测：DirectX 11.1 + GPU 渲染）
-cargo test -p lexi-core         # 核心逻辑独立测试（115 个），无需 GPU/窗口
+cargo test -p lexi-core         # 核心逻辑独立测试（117 个），无需 GPU/窗口
 cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用）
 ```
 
@@ -21,7 +21,7 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
 
 - **侧边栏**：品牌区、词典/单词本/设置导航（选中态霓虹描边 + 左缘指示条）、底部统计（今日查词目标 + 连续打卡，来自 history 表 UTC 日聚合）
 - **顶栏**：搜索框（焦点青光圈、`Ctrl K` 聚焦、300ms 防抖 + Enter 立即查）、MW 配额 chip、离线指示、随机单词（ECDICT 高频前 20k 随机）、历史弹层（最近 50 条点击即查）、首启导入进度细条
-- **词典视图**：headword + homograph 上标 + 播放/收藏圆钮、MW/IPA 双音标、词性/考试/常用度标签、meta 信息条（SRC/SECTION/SORT/ID）、sense 卡片（强调色轮转、编号、例句、sdsense 子块 ↳）、交叉引用 chips、词源/屈折/派生/首见年代、右侧信息栏（shortdef / stems（可点击）/ 中文释义 / 词频档案 / 学习档案）
+- **词典视图**：headword + homograph 上标 + 播放/收藏圆钮、MW/IPA 双音标 + 多人声发音按钮（MW 提供的发音变体，≤3 个）、词性/考试/常用度标签、meta 信息条（SRC/SECTION/SORT/ID）、sense 卡片（强调色轮转、编号、**义项层级缩进**（数字=0/字母=1/括号=2）、**sense 级词性**（MW def[].fl，同形词名词/动词义项各自标注；ECDICT 离线链解析行首 n./vt. 标注）、例句、sdsense 子块 ↳）、交叉引用 chips、词源/屈折/派生/首见年代、右侧信息栏（shortdef / stems（可点击）/ 中文释义（全量行）/ 词频档案 / 学习档案）
 - **单词本视图**：四态筛选（全部/生词/学习中/熟悉/已掌握 + 计数）、卡片网格（左缘强调色、音标、释义、掌握度进度条）、添加单词行、卡片内状态流转/移除
 - **设置视图**：外观（主题色板 cyan/magenta/violet 即改即存、扫描线开关、网格开关）、发音（自动发音、语速 0.75/1.0/1.25×——rodio `Source::speed`）、数据（MW Key、缓存 TTL/上限、词库计数与强制重导、数据目录/导出/导入/配额重置）
 - 特效层：46px 等距网格（canvas 逐行绘制 + 顶部衰减）、CRT 扫描线（3px 周期）、三处氛围光斑（inset box-shadow 模糊近似径向渐变）；均可关闭
@@ -56,8 +56,9 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
 
 - Endpoint：`https://www.dictionaryapi.com/api/v3/references/collegiate/json/{word}?key=KEY`
 - Key 仅存于数据目录 `config.toml`，**绝不硬编码/入库**；未配置时整条在线链跳过（离线模式功能完整）
-- 非商用额度 ≤1000 次/天/Key：本地 meta 表计数，超限熔断到离线直至次日
+- 非商用额度 ≤1000 次/天/Key：本地 meta 表计数（顶栏配额 chip 每次查询后刷新），超限熔断到离线直至次日
 - 音频 URL 规则实现于 `lexi-core/src/infra/mw/audio_url.rs`（含文档三例单测）
+- MW 结果缓存**只刷新、永不清除**：`cache_ttl_days` 是刷新周期（默认 30 天），到期后查询重新拉取 MW 并覆盖同一行（hit_count 保留）；过期行不删除，`sweep` 仅在超过 `cache_max_rows`（默认 50000，几乎不会触发）时冷淘汰。缓存命中时直接重放 `raw_json` 全字段解析（提取列仅作 raw 损坏的兜底，后续新增 MW 字段无需再做列迁移）
 
 ## 风险与应对
 
@@ -65,7 +66,7 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
 |---|---|
 | GPUI pre-1.0 breaking change | 不直接依赖 gpui git rev；经 crates.io 的 `gpui-kit`（其内部以 `gpui-pre` 快照锁定 GPUI）。升级 = 升 gpui-kit 版本，README 记录所用 gpui-kit / gpui-pre 版本 |
 | gpui-kit Windows 组件不足 | Input / VirtualList / Popover / Dialog / Switch 等均已在 gpui-kit 0.8 提供；若具体组件在 Windows 出问题，回退方案是自写简化组件（不改 core 层） |
-| MW 1000 次/天限额 | 强缓存（TTL 30 天 + 命中不落网）+ 本地计数熔断 + 设置页提示勿外传 Key |
+| MW 1000 次/天限额 | 永久缓存（30 天刷新周期 + 命中不落网）+ 本地计数熔断 + 设置页提示勿外传 Key |
 | ECDICT mini 覆盖率不足 | 数据源可替换：用户可放入更大规模 csv（同列名格式）重新导入；完整版生成见 make_mini 工具 |
 | MW 限流响应形态未知 | 文档未给出限流 HTTP 状态码/报文；实现按 403/429 + body 探测并熔断，**待实测确认**（标记于 `mw/mod.rs`） |
 | Windows HiDPI 渲染 | gpui-kit 声称支持；发布前须在 100%/150%/200% 缩放下人工验收 |

@@ -1,8 +1,10 @@
 //! MW 结果缓存仓储（cache_entry 表）。
 //!
-//! 语义：命中且未过 TTL → 返回并 `hit_count++`（第二次查询同一词
-//! 零网络请求，由 orchestrator 保证）；`sweep` 执行 TTL 过期删除 +
-//! 超 `max_rows` 行的冷淘汰（hit_count ASC, fetched_at ASC）。
+//! 语义（永不清除策略）：`ttl_days` 是**刷新周期**而非保留期——
+//! 到期后 `get` 返回 None（查询链重新走 MW 并 `put` 覆盖同一行，
+//! hit_count 保留），过期行**不删除**；`sweep` 仅在超过 `max_rows`
+//! 时按 hit_count/fetched_at 冷淘汰。一个单词的释义几乎不会变化，
+//! 缓存只刷新、不清理。
 
 use async_trait::async_trait;
 use rusqlite::params;
@@ -20,22 +22,23 @@ pub struct CachedEntry {
 
 #[derive(Debug, Default, PartialEq)]
 pub struct SweepReport {
-    pub ttl_expired: u64,
+    /// 超过 max_rows 冷淘汰的行数（TTL 不再触发删除）
     pub evicted: u64,
 }
 
 #[async_trait]
 pub trait CacheRepo: Send + Sync {
-    /// TTL 内命中返回条目并递增 hit_count；未命中/过期返回 None（过期行顺带删除）。
+    /// 刷新周期内命中返回条目并递增 hit_count；到期返回 None 触发
+    /// 重新拉取（过期行保留，刷新时被 put 覆盖；缓存永不清除）。
     async fn get(&self, key: &str, now: i64) -> anyhow::Result<Option<CachedEntry>>;
 
-    /// 只读查看（不递增 hit_count、不触发过期删除）；用于单词本摘要聚合。
+    /// 只读查看（不递增 hit_count）；用于单词本摘要聚合。
     async fn peek(&self, key: &str, now: i64) -> anyhow::Result<Option<CachedEntry>>;
 
     /// 写入/覆盖缓存（保留既有 hit_count）。
     async fn put(&self, key: &str, mw: &MwEntry, ttl_days: u32, now: i64) -> anyhow::Result<()>;
 
-    /// 清理过期与超限行（TTL 用每行 put 时写入的 ttl_days 列判定）。
+    /// 清理超限行（仅 max_rows 冷淘汰；TTL 不删行）。
     async fn sweep(&self, max_rows: u32, now: i64) -> anyhow::Result<SweepReport>;
 }
 
@@ -98,9 +101,9 @@ impl CacheRepo for SqliteCacheRepo {
                     return Ok(None);
                 };
 
-                // TTL 判定（秒）
+                // 刷新周期判定：到期返回 None（走 MW 重取覆盖），
+                // 行本身保留 —— 缓存永不清除
                 if fetched_at + ttl_days * 86_400 < now {
-                    c.execute("DELETE FROM cache_entry WHERE word_key = ?1", [&key])?;
                     return Ok(None);
                 }
 
@@ -109,7 +112,7 @@ impl CacheRepo for SqliteCacheRepo {
                     [&key],
                 )?;
 
-                let mw = MwEntry {
+                let mw = crate::infra::mw::parse_cached_entry(&raw_json).unwrap_or_else(|| MwEntry {
                     headword: headword.unwrap_or_default(),
                     phonetic: phonetic.unwrap_or_default(),
                     pos: pos.unwrap_or_default(),
@@ -129,8 +132,8 @@ impl CacheRepo for SqliteCacheRepo {
                     inflections: decode_json_or_default(&ins_json),
                     run_ons: decode_json_or_default(&uros_json),
                     cross_refs: decode_json_or_default(&cxs_json),
-                    raw_json,
-                };
+                    raw_json: raw_json.clone(),
+                });
                 Ok(Some(CachedEntry {
                     mw,
                     fetched_at,
@@ -193,7 +196,7 @@ impl CacheRepo for SqliteCacheRepo {
                 if fetched_at + ttl_days * 86_400 < now {
                     return Ok(None);
                 }
-                let mw = MwEntry {
+                let mw = crate::infra::mw::parse_cached_entry(&raw_json).unwrap_or_else(|| MwEntry {
                     headword: headword.unwrap_or_default(),
                     phonetic: phonetic.unwrap_or_default(),
                     pos: pos.unwrap_or_default(),
@@ -211,8 +214,8 @@ impl CacheRepo for SqliteCacheRepo {
                     inflections: decode_json_or_default(&ins_json),
                     run_ons: decode_json_or_default(&uros_json),
                     cross_refs: decode_json_or_default(&cxs_json),
-                    raw_json,
-                };
+                    raw_json: raw_json.clone(),
+                });
                 Ok(Some(CachedEntry {
                     mw,
                     fetched_at,
@@ -282,10 +285,7 @@ impl CacheRepo for SqliteCacheRepo {
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {
             db.with_conn(|c| {
-                let ttl_expired = c.execute(
-                    "DELETE FROM cache_entry WHERE fetched_at + ttl_days*86400 < ?1",
-                    [now],
-                )? as u64;
+                let _ = now; // TTL 不删行；仅超限冷淘汰
                 let total: u32 = c.query_row("SELECT COUNT(*) FROM cache_entry", [], |r| r.get(0))?;
                 let evicted = if total > max_rows {
                     c.execute(
@@ -298,7 +298,7 @@ impl CacheRepo for SqliteCacheRepo {
                 } else {
                     0
                 };
-                Ok(SweepReport { ttl_expired, evicted })
+                Ok(SweepReport { evicted })
             })
         })
         .await
@@ -382,15 +382,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ttl_expiry_deletes_row() {
+    async fn ttl_expiry_keeps_row_but_returns_none() {
         let r = repo();
         r.put("test", &entry("test"), 30, 1000).await.unwrap();
-        // 31 天后
+        // 31 天后：触发重取（None），但行保留（缓存永不清除）
         let c = r.get("test", 1000 + 31 * 86_400).await.unwrap();
         assert!(c.is_none());
-        // 过期行已被删除：sweep 计数为 0
-        let report = r.sweep(50_000, 1000 + 31 * 86_400).await.unwrap();
-        assert_eq!(report.ttl_expired, 0);
+        let rows: i64 = r
+            .db
+            .with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM cache_entry", [], |x| x.get(0))?))
+            .unwrap();
+        assert_eq!(rows, 1);
+        // 刷新周期内重取覆盖后可再次命中
+        r.put("test", &entry("test"), 30, 1000 + 31 * 86_400)
+            .await
+            .unwrap();
+        let c = r.get("test", 1000 + 31 * 86_400 + 10).await.unwrap();
+        assert!(c.is_some());
+        // sweep 永不因 TTL 删除
+        let report = r.sweep(50_000, 1000 + 300 * 86_400).await.unwrap();
+        assert_eq!(report.evicted, 0);
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-//! NEONLEX 主题 tokens（docs/cyberpunk ui.html 设计稿 :root 变量）。
+//! CyberLexi 主题 tokens（docs/cyberpunk ui.html 设计稿 :root 变量）。
 //!
 //! 色板：深空底 + 霓虹青主强调 + 霓虹粉/等离紫/荧光绿/琥珀辅助。
 //! 「主题色板」设置可在 cyan/magenta/violet 三者间切换强调色
@@ -186,5 +186,7 @@ pub fn apply(cx: &mut App) {
         theme.colors.border = Neon::border();
         theme.colors.accent = Neon::cyan();
         theme.colors.secondary = Neon::bg_elev();
+        // 输入框光标（闪烁 caret）默认色在暗底下不可见 → 青色
+        theme.colors.caret = Neon::cyan();
     });
 }

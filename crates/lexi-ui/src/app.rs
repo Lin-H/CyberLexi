@@ -360,7 +360,7 @@ impl Render for AppView {
                 )
         });
 
-        div()
+        let base = div()
             .relative()
             .flex()
             .size_full()
@@ -394,7 +394,13 @@ impl Render for AppView {
                     ),
             )
             // 顶层：扫描线（盖在内容上，pointer-events none 天然成立）
-            .child(scanlines)
-            .children(toast)
+            .child(scanlines);
+        // 历史弹层在根层渲染（晚于内容绘制，不被右栏面板遮挡）
+        let with_pop = if self.history_open {
+            base.child(crate::topbar::history_popover(self, cx))
+        } else {
+            base
+        };
+        with_pop.children(toast)
     }
 }

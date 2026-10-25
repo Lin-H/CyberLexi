@@ -48,6 +48,19 @@ pub fn parse_body(body: &str) -> anyhow::Result<MwResponse> {
     Ok(MwResponse::Entries(entries))
 }
 
+/// 缓存回放：raw_json（单 entry 对象；旧版可能是 entry 数组）→ MwEntry。
+/// 命中 raw 即重新全字段解析 —— 提取列仅作 raw 损坏时的兜底，
+/// 后续新增 MW 字段无需再为缓存做列迁移。
+pub fn parse_cached_entry(raw: &str) -> Option<MwEntry> {
+    let v: Value = serde_json::from_str(raw).ok()?;
+    let obj = match v {
+        Value::Array(items) => items.into_iter().find(|i| i.is_object())?,
+        Value::Object(o) => Value::Object(o),
+        _ => return None,
+    };
+    parse_entry(&obj).ok()
+}
+
 /// 提取单个 entry（homograph）。
 fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
     let hwi = &v["hwi"];
@@ -156,14 +169,17 @@ fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
         .map(|a| a.iter().filter_map(|s| s.as_str()).map(str::to_string).collect())
         .unwrap_or_default();
 
-    // def[].sseq 展开
+    // def[].sseq 展开；def 块可自带 fl（多词性词条各块不同）；缺省
+    // 回退 entry 级 fl——同形词（test:1 名词 / test:2 动词）合并后
+    // 各 sense 仍携带正确词性
     let mut senses = Vec::new();
     if let Some(defs) = v["def"].as_array() {
         for def in defs {
+            let fl = def["fl"].as_str().or(Some(pos.as_str()));
             if let Some(sseq) = def["sseq"].as_array() {
                 for group in sseq {
                     if let Some(elems) = group.as_array() {
-                        walk_sense_elements(elems, &mut senses);
+                        walk_sense_elements(elems, fl, &mut senses);
                     }
                 }
             }
@@ -240,14 +256,14 @@ fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
 }
 
 /// 展开 sseq 组内元素：sense / sen / bs / pseq（文档 §2.10）。
-fn walk_sense_elements(elems: &[Value], out: &mut Vec<Sense>) {
+fn walk_sense_elements(elems: &[Value], fl: Option<&str>, out: &mut Vec<Sense>) {
     for elem in elems {
         let Some(pair) = elem.as_array() else { continue };
         let kind = pair.first().and_then(Value::as_str).unwrap_or_default();
         match kind {
             "sense" => {
                 if let Some(body) = pair.get(1) {
-                    push_sense(body, out);
+                    push_sense(body, fl, out);
                 }
             }
             // 截断 sense（无定义文本，§2.10.8）：跳过
@@ -255,13 +271,13 @@ fn walk_sense_elements(elems: &[Value], out: &mut Vec<Sense>) {
             // binding substitute（§2.10.9）：内含一个 sense
             "bs" => {
                 if let Some(inner) = pair.get(1).and_then(|b| b.get("sense")) {
-                    push_sense(inner, out);
+                    push_sense(inner, fl, out);
                 }
             }
             // 括号序列（§2.10.10）：递归
             "pseq" => {
                 if let Some(inner) = pair.get(1).and_then(Value::as_array) {
-                    walk_sense_elements(inner, out);
+                    walk_sense_elements(inner, fl, out);
                 }
             }
             _ => {}
@@ -271,7 +287,7 @@ fn walk_sense_elements(elems: &[Value], out: &mut Vec<Sense>) {
 
 /// 从 sense 对象提取 sn/dt（text + vis）；sdsense（§2.10.7）挂为
 /// `subsenses` 子块（UI 以 "↳ label: text" 形式渲染）。
-fn push_sense(body: &Value, out: &mut Vec<Sense>) {
+fn push_sense(body: &Value, fl: Option<&str>, out: &mut Vec<Sense>) {
     let sn = body["sn"].as_str().map(str::to_string);
     let (text, examples) = extract_dt(&body["dt"]);
     let subsenses: Vec<SubSense> = body
@@ -288,7 +304,13 @@ fn push_sense(body: &Value, out: &mut Vec<Sense>) {
         .filter(|sd| !sd.text.is_empty() || !sd.examples.is_empty())
         .collect();
     if !text.is_empty() || !examples.is_empty() || !subsenses.is_empty() {
-        out.push(Sense { sn, text, examples, subsenses });
+        out.push(Sense {
+            sn,
+            pos: fl.filter(|s| !s.is_empty()).map(str::to_string),
+            text,
+            examples,
+            subsenses,
+        });
     }
 }
 
@@ -485,6 +507,9 @@ mod tests {
                 assert_eq!(es[0].cross_refs.len(), 1);
                 assert_eq!(es[0].cross_refs[0].label, "synonym of");
                 assert_eq!(es[0].cross_refs[0].refs, vec!["trial", "proof"]);
+                // def 无 fl 时 sense 回退 entry 级 fl（同形词合并后词性正确）
+                assert_eq!(es[0].senses[0].pos.as_deref(), Some("noun"));
+                assert_eq!(es[1].senses[0].pos.as_deref(), Some("verb"));
             }
             _ => panic!(),
         }
@@ -495,6 +520,28 @@ mod tests {
         let body = r#"["python","pythonic","pylon"]"#;
         match parse_body(body).unwrap() {
             MwResponse::Suggestions(s) => assert_eq!(s, vec!["python", "pythonic", "pylon"]),
+            _ => panic!(),
+        }
+    }
+
+    /// 多词性词条：def 块各自带 fl，sense 携带块级词性（非 entry 级）。
+    #[test]
+    fn per_def_fl_attaches_to_senses() {
+        let body = r#"[
+            {"meta":{"id":"test"},"hwi":{"hw":"test"},
+             "fl":"noun",
+             "def":[
+               {"fl":"noun","sseq":[[["sense",{"sn":"1","dt":[["text","{bc}an exam"]]}]]]},
+               {"fl":"verb","sseq":[[["sense",{"sn":"1","dt":[["text","{bc}to try"]]}]]]}
+             ],
+             "shortdef":["a"]}
+        ]"#;
+        match parse_body(body).unwrap() {
+            MwResponse::Entries(es) => {
+                assert_eq!(es[0].pos, "noun"); // entry 级仍是首个 fl
+                assert_eq!(es[0].senses[0].pos.as_deref(), Some("noun"));
+                assert_eq!(es[0].senses[1].pos.as_deref(), Some("verb"));
+            }
             _ => panic!(),
         }
     }

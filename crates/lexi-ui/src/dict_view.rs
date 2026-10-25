@@ -57,7 +57,7 @@ fn render_entry(entry: &MergedEntry, view: &mut AppView, cx: &mut Context<AppVie
         .child(aside(entry, wb_item.as_ref()))
 }
 
-fn hero(entry: &MergedEntry, in_wordbook: bool, cx: &mut Context<AppView>) -> Div {
+fn hero(entry: &MergedEntry, in_wordbook: bool, _cx: &mut Context<AppView>) -> Div {
     let mut head = div().flex().items_center().flex_wrap().gap(px(16.));
 
     // headword + homograph 上标
@@ -111,12 +111,13 @@ fn hero(entry: &MergedEntry, in_wordbook: bool, cx: &mut Context<AppView>) -> Di
         }));
     }
 
-    // 音标行：MW 音标 + 小圆钮 + IPA（ECDICT）+ 备用音标
+    // 音标行：MW 音标 + 多人声小圆钮（MW 提供的发音变体，≤3）+ IPA + 备用
     let mut pr_row = div().flex().items_center().flex_wrap().gap(px(10.)).mt(px(14.));
-    if !entry.phonetic.is_empty() {
-        pr_row = pr_row
-            .child(phonetic_pill("MW", &entry.phonetic, false))
-            .child(audio_dot(entry, cx));
+    if !entry.phonetic.is_empty() || !entry.audio_codes.is_empty() {
+        if !entry.phonetic.is_empty() {
+            pr_row = pr_row.child(phonetic_pill("MW", &entry.phonetic, false));
+        }
+        pr_row = pr_row.child(audio_variants(entry));
     }
     if let Some(ipa) = &entry.ipa {
         if !ipa.is_empty() && *ipa != entry.phonetic {
@@ -257,36 +258,52 @@ fn phonetic_pill(label: &str, text: &str, dim: bool) -> Div {
     )
 }
 
-/// 行内小圆钮（28px；发音栏第二入口）。
-fn audio_dot(entry: &MergedEntry, _cx: &mut Context<AppView>) -> Stateful<Div> {
-    let code = entry
-        .audio_codes
-        .first()
-        .cloned()
-        .unwrap_or_default();
-    div()
-        .id("hero-audio-dot")
-        .cursor_pointer()
-        .w(px(28.))
-        .h(px(28.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .bg(with_alpha(Neon::cyan(), 0.08))
-        .border_1()
-        .border_color(with_alpha(Neon::cyan(), 0.3))
-        .text_color(Neon::cyan())
-        .hover(|d| {
-            d.bg(with_alpha(Neon::cyan(), 0.2))
-                .shadow(vec![crate::theme::glow(Neon::cyan(), 0.45, 16.)])
-        })
-        .on_click(move |_, _, _| {
-            if !code.is_empty() {
-                crate::send_global(UiCommand::PlayAudio { code: code.clone(), ref_: "c".into() });
-            }
-        })
-        .child(Icon::new(IconName::Volume2).with_size(px(11.)))
+/// 发音变体按钮组（MW 提供的多个 sound.audio 人声，最多 3 个）。
+/// 单个时显示喇叭图标；多个时显示序号。
+fn audio_variants(entry: &MergedEntry) -> Div {
+    let codes: Vec<&String> = entry.audio_codes.iter().take(3).collect();
+    let mut row = div().flex().items_center().gap(px(6.));
+    for (i, code) in codes.iter().enumerate() {
+        let code = (*code).clone();
+        let multiple = codes.len() > 1;
+        row = row.child(
+            div()
+                .id(("audio", i))
+                .cursor_pointer()
+                .w(px(28.))
+                .h(px(28.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(with_alpha(Neon::cyan(), 0.08))
+                .border_1()
+                .border_color(with_alpha(Neon::cyan(), 0.3))
+                .text_color(Neon::cyan())
+                .hover(|d| {
+                    d.bg(with_alpha(Neon::cyan(), 0.2))
+                        .shadow(vec![crate::theme::glow(Neon::cyan(), 0.45, 16.)])
+                })
+                .on_click(move |_, _, _| {
+                    crate::send_global(UiCommand::PlayAudio {
+                        code: code.clone(),
+                        ref_: "c".into(),
+                    });
+                })
+                .child(if multiple {
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child((i + 1).to_string())
+                        .into_any_element()
+                } else {
+                    Icon::new(IconName::Volume2)
+                        .with_size(px(11.))
+                        .into_any_element()
+                }),
+        );
+    }
+    row
 }
 
 fn body(entry: &MergedEntry) -> Div {
@@ -438,13 +455,15 @@ fn sense_card(i: usize, sense: &Sense, entry: &MergedEntry) -> Div {
     let accent = sense_accent(i);
     // sn "1 a" → 主编号 + 小字母
     let sn = sense.sn.clone().unwrap_or_default();
+    // 层级（视觉缩进依据）：纯数字=0；字母（含 "1 a" 的 a）=1；
+    // 括号形式 "(2)" = 2（在 move 之前计算）
+    let level = sn_level(&sn);
     let (num, sub) = match sn.split_once(' ') {
         Some((a, b)) => (a.to_string(), b.to_string()),
         None => (sn, String::new()),
     };
-
     let mut num_col = div()
-        .w(px(52.))
+        .w(if level == 0 { px(52.) } else { px(38.) })
         .flex_none()
         .flex()
         .flex_col()
@@ -453,8 +472,12 @@ fn sense_card(i: usize, sense: &Sense, entry: &MergedEntry) -> Div {
         .text_color(accent);
     num_col = num_col.child(
         div()
-            .text_2xl()
-            .font_weight(FontWeight::EXTRA_BOLD)
+            .text_size(match level {
+                0 => px(22.),
+                1 => px(17.),
+                _ => px(14.),
+            })
+            .font_weight(if level == 0 { FontWeight::EXTRA_BOLD } else { FontWeight::BOLD })
             .font_family(crate::theme::MONO_FONT)
             .line_height(relative(1.0))
             .child(if num.is_empty() { (i + 1).to_string() } else { num }),
@@ -472,8 +495,14 @@ fn sense_card(i: usize, sense: &Sense, entry: &MergedEntry) -> Div {
 
     let mut body = div().flex().flex_col().min_w_0();
 
-    // 顶部：词性徽标（继承 entry fl）
-    if !entry.pos.is_empty() {
+    // 顶部：词性徽标 —— sense 级（MW def[].fl，多词性词条各块不同）
+    // 优先，缺省回退 entry 级
+    let pos = sense
+        .pos
+        .clone()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| entry.pos.clone());
+    if !pos.is_empty() {
         body = body.child(
             div()
                 .flex()
@@ -481,7 +510,7 @@ fn sense_card(i: usize, sense: &Sense, entry: &MergedEntry) -> Div {
                 .gap(px(10.))
                 .mb(px(8.))
                 .child(tag_pill(
-                    entry.pos.clone(),
+                    pos,
                     accent,
                     with_alpha(accent, 0.45),
                     with_alpha(accent, 0.09),
@@ -547,30 +576,55 @@ fn sense_card(i: usize, sense: &Sense, entry: &MergedEntry) -> Div {
         .flex()
         .gap(px(18.))
         .pr(px(22.))
-        .py(px(20.))
+        .py(if level == 0 { px(20.) } else { px(14.) })
+        // 层级缩进：一级 24px、二级 48px（左缘强调条随卡片整体移动）
+        .ml(px(level as f32 * 24.))
         .rounded_xl()
         .bg(grad(
             155.,
-            with_alpha(hex("#0f1828"), 0.78),
-            with_alpha(hex("#070b13"), 0.72),
+            with_alpha(hex("#0f1828"), if level == 2 { 0.5 } else { 0.78 }),
+            with_alpha(hex("#070b13"), if level == 2 { 0.45 } else { 0.72 }),
         ))
         .border_1()
-        .border_color(steel(0.11))
+        .border_color(if level == 2 {
+            with_alpha(Neon::violet(), 0.18)
+        } else {
+            steel(0.11)
+        })
         .shadow(vec![crate::theme::glow(accent, 0.05, 34.)])
         // 左缘强调条
         .child(
             div()
                 .absolute()
                 .left_0()
-                .top(px(16.))
-                .bottom(px(16.))
+                .top(if level == 0 { px(16.) } else { px(10.) })
+                .bottom(if level == 0 { px(16.) } else { px(10.) })
                 .w(px(2.))
                 .rounded_r_sm()
-                .bg(accent)
+                .bg(if level == 2 { with_alpha(accent, 0.6) } else { accent })
                 .shadow(vec![crate::theme::glow(accent, 0.7, 16.)]),
         )
         .child(num_col)
         .child(body)
+}
+
+/// MW sn 形式 → 视觉层级：纯数字=0；字母（a/b/…，含 "1 a" 的字母位）=1；
+/// 括号 "(2)"=2（义项下的再细分）。
+fn sn_level(sn: &str) -> usize {
+    let s = sn.trim();
+    if s.is_empty() {
+        return 0;
+    }
+    if s.starts_with('(') && s.ends_with(')') {
+        return 2;
+    }
+    // "1 a" 取字母位；纯字母 → 1
+    let token = s.split_whitespace().last().unwrap_or(s);
+    if token.chars().all(|c| c.is_ascii_alphabetic()) {
+        1
+    } else {
+        0
+    }
 }
 
 fn cxs_row(entry: &MergedEntry) -> Div {
@@ -641,7 +695,10 @@ fn aside(
                             .text_color(with_alpha(Neon::cyan(), 0.8))
                             .child((i + 1).to_string()),
                     )
-                    .child(div().child(d.clone())),
+                    .child(
+                        // flex_1 + min_w_0：允许收缩，长释义自动换行
+                        div().flex_1().min_w_0().child(d.clone()),
+                    ),
             );
         }
         col = col.child(panel().child(panel_title("Short Definitions")).child(list));
@@ -678,10 +735,10 @@ fn aside(
         col = col.child(panel().child(panel_title("Stems · 词干")).child(chips));
     }
 
-    // 中文释义（ECDICT）
+    // 中文释义（ECDICT 全量行；不截断）
     if let Some(chinese) = &entry.chinese {
         let mut lines = div().flex().flex_col().gap(px(6.));
-        for line in chinese.split('\n').filter(|s| !s.trim().is_empty()).take(12) {
+        for line in chinese.split('\n').filter(|s| !s.trim().is_empty()) {
             lines = lines.child(
                 div()
                     .text_sm()
@@ -955,7 +1012,7 @@ fn render_placeholder(_view: &mut AppView, _cx: &mut Context<AppView>) -> Div {
                 .text_3xl()
                 .font_weight(FontWeight::EXTRA_BOLD)
                 .text_color(with_alpha(Neon::cyan_light(), 0.85))
-                .child("NEONLEX"),
+                .child("CYBERLEXI"),
         )
         .child(
             div()

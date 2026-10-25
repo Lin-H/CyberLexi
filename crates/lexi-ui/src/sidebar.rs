@@ -1,5 +1,5 @@
-//! 左侧边栏：品牌区、三视图导航（词典/单词本/设置）、底部统计
-//!（今日查词目标 + 连续打卡）。设计稿 .sidebar。
+//! 左侧边栏：品牌区（CyberLexi）、三视图导航（词典/单词本/设置）、
+//! 底部统计（今日查词目标 + 连续打卡）。设计稿 .sidebar。
 //!
 //! GPUI 限制：无 letter-spacing / transform:rotate —— 品牌字距与菱形
 //! Logo 以字重/渐变近似（待确认：GPUI 后续版本补充）。
@@ -59,7 +59,7 @@ fn brand() -> Div {
                         .text_base()
                         .font_weight(FontWeight::BLACK)
                         .text_color(hex("#03121a"))
-                        .child("N"),
+                        .child("C"),
                 ),
         )
         .child(
@@ -71,7 +71,7 @@ fn brand() -> Div {
                         .text_sm()
                         .font_weight(FontWeight::EXTRA_BOLD)
                         .text_color(hex("#ffffff"))
-                        .child("NEONLEX"),
+                        .child("CYBERLEXI"),
                 )
                 .child(
                     div()

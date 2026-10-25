@@ -190,8 +190,8 @@ pub fn render(view: &mut AppView, _cx: &mut Context<AppView>) -> Div {
                 )
                 // 缓存
                 .child(row(
-                    "缓存 TTL（天）",
-                    "MW 结果本地缓存天数；过期自动清理",
+                    "缓存刷新周期（天）",
+                    "到期后查询重新拉取 MW 并覆盖；缓存只刷新、永不清除",
                     div()
                         .w(px(160.))
                         .child(Input::new(&ttl_input))
@@ -199,7 +199,7 @@ pub fn render(view: &mut AppView, _cx: &mut Context<AppView>) -> Div {
                 ))
                 .child(row(
                     "缓存行数上限",
-                    "超限按 hit_count / fetched_at 冷淘汰",
+                    "超过上限才按 hit_count / fetched_at 冷淘汰（默认几乎不触发）",
                     div()
                         .w(px(160.))
                         .child(Input::new(&max_input))
@@ -245,7 +245,7 @@ pub fn render(view: &mut AppView, _cx: &mut Context<AppView>) -> Div {
                                 .map(|p| p.export_dir())
                                 .unwrap_or_default();
                             let _ = std::fs::create_dir_all(&dir);
-                            let out = dir.join(format!("neonlex-{}.zip", day_stamp()));
+                            let out = dir.join(format!("cyberlexi-{}.zip", day_stamp()));
                             crate::send_global(UiCommand::ExportPackage(out));
                         }))
                         .child(action_chip("set-reset-quota", "重置 MW 今日计数", |_, _, _| {

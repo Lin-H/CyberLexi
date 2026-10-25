@@ -1,4 +1,4 @@
-//! NEONLEX 入口：图标资产注册 → 后台 worker → GPUI 窗口。
+//! CyberLexi 入口：图标资产注册 → 后台 worker → GPUI 窗口。
 //!
 //! GPUI 主线程零阻塞（硬约束）：所有 IO 在 lexi-core worker 的
 //! tokio 运行时执行，UI 经 UiCommand / BackendEvent 通信。
@@ -65,7 +65,7 @@ pub fn patch_audio(f: impl FnOnce(&mut AudioCfg)) {
 }
 
 // Ctrl+K 聚焦搜索。
-actions!(neonlex, [FocusSearch]);
+actions!(cyberlexi, [FocusSearch]);
 
 fn main() -> anyhow::Result<()> {
     let paths = AppPaths::resolve()?;
@@ -97,7 +97,7 @@ fn main() -> anyhow::Result<()> {
                         size: size(px(1320.), px(880.)),
                     })),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("NEONLEX — 赛博英语词典".into()),
+                        title: Some("CyberLexi — 赛博英语词典".into()),
                         ..Default::default()
                     }),
                     ..Default::default()
