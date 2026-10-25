@@ -115,8 +115,17 @@ fn hero(entry: &MergedEntry, in_wordbook: bool, tts_voices: &[String], _cx: &mut
         }));
     }
 
-    // 音标行：MW 音标 + 多人声小圆钮（MW 录音变体 + TTS 人声，共 ≤3）+ IPA + 备用
+    // 音标行：MW 音标（psl 标签前缀，§2.7.4）+ 多人声小圆钮 + IPA + 备用
     let mut pr_row = div().flex().items_center().flex_wrap().gap(px(10.)).mt(px(14.));
+    if let Some(psl) = &entry.pron_label {
+        pr_row = pr_row.child(
+            div()
+                .text_xs()
+                .italic()
+                .text_color(Neon::sense_hint())
+                .child(format!("({psl})")),
+        );
+    }
     if !entry.phonetic.is_empty() || !entry.audio_codes.is_empty() || !tts_voices.is_empty() {
         if !entry.phonetic.is_empty() {
             pr_row = pr_row.child(phonetic_pill("MW", &entry.phonetic, false));
@@ -132,10 +141,32 @@ fn hero(entry: &MergedEntry, in_wordbook: bool, tts_voices: &[String], _cx: &mut
         pr_row = pr_row.child(phonetic_pill("ALT", alt, true));
     }
 
-    // 词性 + 等级 + 常用度 + offensive + 来源
+    // 词性 + 等级 + 常用度 + offensive + 来源 + 变体拼写（vrs，§2.5）
+    // + 备选词头（ahws，§2.4）
     let mut meta = div().flex().items_center().flex_wrap().gap(px(10.)).mt(px(14.));
     if !entry.pos.is_empty() {
         meta = meta.child(solid_pill(entry.pos.clone(), Neon::cyan()));
+    }
+    for v in entry.variants.iter().take(6) {
+        let text = if v.vl.is_empty() {
+            format!("or {}", v.va)
+        } else {
+            format!("{} {}", v.vl, v.va)
+        };
+        meta = meta.child(tag_pill(
+            text,
+            hex("#9db4c9"),
+            steel(0.35),
+            white(0.04),
+        ));
+    }
+    for hw in entry.alt_headwords.iter().take(6) {
+        meta = meta.child(tag_pill(
+            format!("also {hw}"),
+            hex("#9db4c9"),
+            steel(0.35),
+            white(0.04),
+        ));
     }
     if !entry.exam_tags.is_empty() {
         let joined = entry.exam_tags.iter().map(|t| t.to_uppercase()).collect::<Vec<_>>().join(" · ");
@@ -362,6 +393,27 @@ fn body(entry: &MergedEntry) -> Div {
         let mut list = div().flex().flex_col().gap(px(14.));
         let mut current_div: Option<String> = None;
         for (i, sense) in entry.senses.iter().enumerate() {
+            // 动词分隔（def.vd，§2.10.2）：及物/不及物序列边界
+            if let Some(vd) = &sense.divider {
+                list = list.child(
+                    div()
+                        .mt(px(6.))
+                        .mb(px(-6.))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(div().flex_1().h(px(1.)).bg(steel(0.12)))
+                        .child(
+                            div()
+                                .text_xs()
+                                .italic()
+                                .font_family(crate::theme::MONO_FONT)
+                                .text_color(Neon::sense_hint())
+                                .child(vd.clone()),
+                        )
+                        .child(div().flex_1().h(px(1.)).bg(steel(0.12))),
+                );
+            }
             let (num, sub, level) = classify_sn(sense.sn.as_deref(), current_div.as_deref());
             if let Some(d) = div_number(sense.sn.as_deref()) {
                 current_div = Some(d);
@@ -452,8 +504,108 @@ fn body(entry: &MergedEntry) -> Div {
             .child(grid);
     }
 
-    // 交叉引用（cxs：近义/参见 chips）
-    if !entry.cross_refs.is_empty() {
+    // 带释义派生短语（dros，§2.19，如 abide → abide by）
+    if !entry.dros.is_empty() {
+        let mut grid = div().flex().flex_col().gap(px(10.));
+        for (di, dro) in entry.dros.iter().enumerate() {
+            let target = dro.drp.clone();
+            let mut card = div()
+                .id(("dro", di))
+                .cursor_pointer()
+                .flex()
+                .flex_col()
+                .gap(px(7.))
+                .px(px(16.))
+                .py(px(13.))
+                .rounded_xl()
+                .bg(grad(
+                    155.,
+                    with_alpha(Neon::cyan(), 0.05),
+                    with_alpha(hex("#070b13"), 0.6),
+                ))
+                .border_1()
+                .border_color(with_alpha(Neon::cyan(), 0.18))
+                .hover(|d| d.border_color(with_alpha(Neon::cyan(), 0.45)))
+                .on_click(move |_, _, _| {
+                    crate::send_global(UiCommand::Query(target.clone()));
+                })
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .text_base()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(hex("#bfe9ff"))
+                                .child(dro.drp.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family(crate::theme::MONO_FONT)
+                                .text_color(Neon::cyan())
+                                .child(dro.fl.to_uppercase()),
+                        ),
+                );
+            for (si, s) in dro.senses.iter().enumerate() {
+                let sn = s.sn.clone().unwrap_or_default();
+                let mut line = div().flex().gap(px(8.)).min_w_0();
+                if !sn.is_empty() {
+                    line = line.child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .font_family(crate::theme::MONO_FONT)
+                            .text_color(Neon::cyan())
+                            .child(sn),
+                    );
+                }
+                line = line.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .line_height(relative(1.6))
+                        .text_color(Neon::text())
+                        .child(s.text.clone()),
+                );
+                card = card.child(line);
+                if let Some(ex) = s.examples.first() {
+                    card = card.child(
+                        div()
+                            .pl(px(12.))
+                            .border_l_2()
+                            .border_color(with_alpha(Neon::cyan(), 0.2))
+                            .text_xs()
+                            .italic()
+                            .line_height(relative(1.6))
+                            .text_color(Neon::example())
+                            .child(format!("“{ex}”")),
+                    );
+                }
+            }
+            grid = grid.child(card);
+        }
+        col = col
+            .child(div().mt(px(10.)).child(section_label("Run-On Phrases · 派生短语")))
+            .child(grid);
+    }
+
+    // 交叉引用（cxs：近义/参见 chips）+ 方向性参见（dxnls，§2.20）
+    if !entry.cross_refs.is_empty() || !entry.dxnls.is_empty() {
+        let mut block = div().flex().flex_col().gap(px(8.));
+        if !entry.cross_refs.is_empty() {
+            block = block.child(cxs_row(entry));
+        }
+        if !entry.dxnls.is_empty() {
+            let mut dx_row = div().flex().flex_wrap().gap(px(6.));
+            for dx in &entry.dxnls {
+                dx_row = dx_row.child(mono_chip(dx.clone()));
+            }
+            block = block.child(dx_row);
+        }
         col = col.child(
             div()
                 .mt(px(18.))
@@ -461,7 +613,7 @@ fn body(entry: &MergedEntry) -> Div {
                 .flex_col()
                 .gap(px(8.))
                 .child(section_label("Cross References · 关联词"))
-                .child(cxs_row(entry)),
+                .child(block),
         );
     }
 
@@ -496,11 +648,16 @@ fn body(entry: &MergedEntry) -> Div {
         );
     }
 
-    // 屈折变体（hwi.ins）
+    // 屈折变体（ins：il 标签 + if/ifc 词形，§2.8）
     if !entry.inflections.is_empty() {
         let mut row = div().flex().flex_wrap().gap_2().mt(px(14.));
         for inf in &entry.inflections {
-            row = row.child(mono_chip(inf.display.clone()));
+            let text = if inf.label.is_empty() {
+                inf.display.clone()
+            } else {
+                format!("{} {}", inf.label, inf.display)
+            };
+            row = row.child(mono_chip(text));
         }
         col = col
             .child(div().mt(px(22.)).child(section_label("Inflections · 词形变化")))
@@ -574,21 +731,157 @@ fn body(entry: &MergedEntry) -> Div {
                         .child(uro.fl.clone()),
                 )
                 .child(div().flex_1())
-                .child(
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family(crate::theme::MONO_FONT)
+                            .text_color(hex("#5f7f99"))
+                            .child(uro.phonetic.clone()),
+                    );
+            // uros 标签（sls/lbs，§2.18）
+            for label in &uro.labels {
+                row = row.child(
                     div()
                         .text_xs()
-                        .font_family(crate::theme::MONO_FONT)
-                        .text_color(hex("#5f7f99"))
-                        .child(uro.phonetic.clone()),
+                        .italic()
+                        .px(px(7.))
+                        .py(px(1.))
+                        .rounded_sm()
+                        .bg(with_alpha(Neon::violet(), 0.06))
+                        .text_color(hex("#b8a8d4"))
+                        .child(label.clone()),
                 );
+            }
             if let Some(p) = play {
                 row = row.child(p);
             }
-            grid = grid.child(row);
+            let mut cell = div().flex().flex_col().gap(px(4.)).child(row);
+            // utxt 例句（派生词自己的用例）
+            for ex in uro.examples.iter().take(2) {
+                cell = cell.child(
+                    div()
+                        .pl(px(12.))
+                        .border_l_2()
+                        .border_color(steel(0.14))
+                        .text_xs()
+                        .italic()
+                        .line_height(relative(1.6))
+                        .text_color(Neon::example())
+                        .child(format!("“{ex}”")),
+                );
+            }
+            grid = grid.child(cell);
         }
         col = col
             .child(div().mt(px(22.)).child(section_label("Run-ons · 派生词条")))
             .child(grid);
+    }
+
+    // 同义词辨析（syns，§2.22）与 用法讨论（usages，§2.21）
+    for (blocks, title) in [
+        (&entry.syns, "Synonym Discussion · 同义词辨析"),
+        (&entry.usages, "Usage Notes · 用法讨论"),
+    ] {
+        if blocks.is_empty() {
+            continue;
+        }
+        let mut wrap = div().flex().flex_col().gap(px(12.)).mt(px(10.));
+        for (bi, b) in blocks.iter().enumerate() {
+            let mut card = div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .px(px(16.))
+                .py(px(13.))
+                .rounded_xl()
+                .bg(grad(
+                    155.,
+                    with_alpha(Neon::amber(), 0.04),
+                    with_alpha(hex("#070b13"), 0.55),
+                ))
+                .border_1()
+                .border_color(with_alpha(Neon::amber(), 0.16));
+            if !b.label.is_empty() {
+                card = card.child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .font_family(crate::theme::MONO_FONT)
+                        .text_color(Neon::amber())
+                        .child(b.label.to_uppercase()),
+                );
+            }
+            if !b.text.is_empty() {
+                card = card.child(
+                    div()
+                        .id(("tb-text", bi))
+                        .text_sm()
+                        .line_height(relative(1.7))
+                        .text_color(hex("#c9bfa4"))
+                        .child(b.text.clone()),
+                );
+            }
+            for ex in b.examples.iter().take(3) {
+                card = card.child(
+                    div()
+                        .pl(px(12.))
+                        .border_l_2()
+                        .border_color(with_alpha(Neon::amber(), 0.25))
+                        .text_xs()
+                        .italic()
+                        .line_height(relative(1.6))
+                        .text_color(Neon::example())
+                        .child(format!("“{ex}”")),
+                );
+            }
+            wrap = wrap.child(card);
+        }
+        col = col.child(div().mt(px(22.)).child(section_label(title))).child(wrap);
+    }
+
+    // 引文（quotes，§2.23：真实语料 + 出处）
+    if !entry.quotes.is_empty() {
+        let mut wrap = div().flex().flex_col().gap(px(10.)).mt(px(10.));
+        for q in entry.quotes.iter().take(6) {
+            let mut card = div()
+                .flex()
+                .flex_col()
+                .gap(px(5.))
+                .px(px(16.))
+                .py(px(12.))
+                .rounded_xl()
+                .bg(white(0.02))
+                .border_1()
+                .border_color(steel(0.1));
+            card = card.child(
+                div()
+                    .text_sm()
+                    .italic()
+                    .line_height(relative(1.65))
+                    .text_color(Neon::text())
+                    .child(format!("“{}”", q.text)),
+            );
+            let mut attr = q.auth.clone();
+            if !q.source.is_empty() {
+                attr.push_str(&format!(", {}", q.source));
+            }
+            if !q.date.is_empty() {
+                attr.push_str(&format!(", {}", q.date));
+            }
+            if !attr.is_empty() {
+                card = card.child(
+                    div()
+                        .text_xs()
+                        .font_family(crate::theme::MONO_FONT)
+                        .text_color(Neon::faint())
+                        .child(format!("— {attr}")),
+                );
+            }
+            wrap = wrap.child(card);
+        }
+        col = col
+            .child(div().mt(px(22.)).child(section_label("Quotations · 引文例句")))
+            .child(wrap);
     }
 
     // 首见年代
@@ -710,26 +1003,58 @@ fn sense_card(
     let mut body = div().flex().flex_col().min_w_0();
 
     // 顶部：词性徽标 —— sense 级（MW def[].fl，多词性词条各块不同）
-    // 优先，缺省回退 entry 级
+    // 优先，缺省回退 entry 级；同排 sgram（T/I）、sls/lbs 标签、sense 级屈折
     let pos = sense
         .pos
         .clone()
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| entry.pos.clone());
-    if !pos.is_empty() {
-        body = body.child(
-            div()
-                .flex()
-                .items_baseline()
-                .gap(px(10.))
-                .mb(px(8.))
-                .child(tag_pill(
-                    pos,
-                    accent,
-                    with_alpha(accent, 0.45),
-                    with_alpha(accent, 0.09),
-                )),
-        );
+    if !pos.is_empty() || sense.sgram.is_some() || !sense.labels.is_empty() {
+        let mut header = div().flex().items_center().flex_wrap().gap(px(6.)).mb(px(8.));
+        if !pos.is_empty() {
+            header = header.child(tag_pill(
+                pos,
+                accent,
+                with_alpha(accent, 0.45),
+                with_alpha(accent, 0.09),
+            ));
+        }
+        if let Some(sg) = &sense.sgram {
+            // 及物/不及物（§2.7.6，方括号斜体惯例）
+            header = header.child(
+                div()
+                    .text_xs()
+                    .italic()
+                    .font_family(crate::theme::MONO_FONT)
+                    .text_color(Neon::sense_hint())
+                    .child(format!("[{sg}]")),
+            );
+        }
+        for label in &sense.labels {
+            header = header.child(
+                div()
+                    .text_xs()
+                    .italic()
+                    .px(px(8.))
+                    .py(px(1.))
+                    .rounded_sm()
+                    .bg(with_alpha(Neon::violet(), 0.07))
+                    .border_1()
+                    .border_color(with_alpha(Neon::violet(), 0.22))
+                    .text_color(hex("#b8a8d4"))
+                    .child(label.clone()),
+            );
+        }
+        for inf in &sense.inflections {
+            header = header.child(
+                div()
+                    .text_xs()
+                    .font_family(crate::theme::MONO_FONT)
+                    .text_color(Neon::faint())
+                    .child(format!("· {inf}")),
+            );
+        }
+        body = body.child(header);
     }
 
     // 定义文本
@@ -782,6 +1107,58 @@ fn sense_card(
                 .line_height(relative(1.6))
                 .text_color(hex("#b8a8d4"))
                 .child(format!("↳ {prefix}{}", sd.text)),
+        );
+    }
+
+    // 说明性文本（dt 内 uns 用法说明 / snote 补充说明，§2.16/2.17）
+    for note in &sense.notes {
+        let is_usage = note.starts_with("USAGE");
+        body = body.child(
+            div()
+                .mt(px(10.))
+                .pl(px(12.))
+                .py(px(7.))
+                .pr(px(10.))
+                .rounded_md()
+                .bg(if is_usage {
+                    with_alpha(Neon::cyan(), 0.04)
+                } else {
+                    white(0.03)
+                })
+                .border_l_2()
+                .border_color(if is_usage {
+                    with_alpha(Neon::cyan(), 0.35)
+                } else {
+                    steel(0.25)
+                })
+                .text_xs()
+                .line_height(relative(1.6))
+                .text_color(hex("#8fa8bf"))
+                .child(note.clone()),
+        );
+    }
+
+    // called also 别名（§2.15，"— called also Manila hemp"）
+    for ca in &sense.called_also {
+        body = body.child(
+            div()
+                .mt(px(8.))
+                .text_xs()
+                .italic()
+                .text_color(Neon::sense_hint())
+                .child(format!("— {ca}")),
+        );
+    }
+
+    // sense 级词源（§2.26，如短语来源）
+    if let Some(et) = &sense.etymology {
+        body = body.child(
+            div()
+                .mt(px(8.))
+                .text_xs()
+                .font_family(crate::theme::MONO_FONT)
+                .text_color(Neon::faint())
+                .child(format!("[{et}]")),
         );
     }
 
@@ -870,6 +1247,57 @@ fn aside(
     wb_item: Option<&lexi_core::domain::wordbook::WordBookItem>,
 ) -> Div {
     let mut col = div().flex().flex_col().gap(px(15.)).w(px(280.)).flex_none();
+
+    // 插图（art，§2.24：artid → merriam-webster.com/art/dict/{artid}.htm）
+    if let Some(art) = &entry.art {
+        col = col.child(
+            panel().child(panel_title("Illustration · 插图")).child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .text_sm()
+                    .line_height(relative(1.55))
+                    .text_color(hex("#9db4c9"))
+                    .child(art.caption.clone())
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family(crate::theme::MONO_FONT)
+                            .text_color(Neon::faint())
+                            .child(format!(
+                                "merriam-webster.com/art/dict/{}.htm",
+                                art.artid
+                            )),
+                    ),
+            ),
+        );
+    }
+
+    // 表格引用（table，§2.25）
+    if let Some(tb) = &entry.table {
+        col = col.child(
+            panel().child(panel_title("Table · 参考表格")).child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .text_sm()
+                    .text_color(hex("#9db4c9"))
+                    .child(tb.display.clone())
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family(crate::theme::MONO_FONT)
+                            .text_color(Neon::faint())
+                            .child(format!(
+                                "merriam-webster.com/table/collegiate/{}.htm",
+                                tb.tableid
+                            )),
+                    ),
+            ),
+        );
+    }
 
     // Short Definitions
     if !entry.short_defs.is_empty() {

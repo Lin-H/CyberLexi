@@ -60,13 +60,35 @@ pub struct Sense {
     /// 如 test 名词条与动词条）。缺省回退 entry 级 fl。
     #[serde(default)]
     pub pos: Option<String>,
-    /// 定义文本（MW markup 已转纯文本）
+    /// 定义文本（MW markup 已转纯文本；dt 内的 ri/bnw 已并入）
     pub text: String,
-    /// verbal illustrations 例句（markup 已转纯文本）
+    /// verbal illustrations 例句（markup 已转纯文本；含 aq 出处后缀）
     pub examples: Vec<String>,
     /// 细分义（sdsense）：作为 sense 内子块渲染（"↳ also: ..."）
     #[serde(default)]
     pub subsenses: Vec<SubSense>,
+    /// 主体/状态标签（sense.sls + def.sls + sense.lbs，如 "chiefly British"）
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// 语法标签（sense.sgram，"T"/"I"/"T/I" = 及物/不及物）
+    #[serde(default)]
+    pub sgram: Option<String>,
+    /// sense 级屈折说明（sense.ins，如 "singular in construction"、"also acoustic"）
+    #[serde(default)]
+    pub inflections: Vec<String>,
+    /// 说明性文本（dt 内 snote 补充说明 + uns 用法说明，带前缀）
+    #[serde(default)]
+    pub notes: Vec<String>,
+    /// called also 别名（dt 内 ca.cats）
+    #[serde(default)]
+    pub called_also: Vec<String>,
+    /// sense 级词源（sense.et，如短语的本义来源）
+    #[serde(default)]
+    pub etymology: Option<String>,
+    /// 动词分隔（def.vd，如 "transitive verb"）——所在 def 块的首个
+    /// sense 携带，UI 在其前渲染分隔行
+    #[serde(default)]
+    pub divider: Option<String>,
 }
 
 /// sdsense 细分义（sd 分隔词 + 定义 + 例句）。
@@ -89,14 +111,17 @@ pub struct MwMeta {
     pub offensive: bool,
 }
 
-/// hwi.ins 屈折变体（if 词形）。
+/// hwi.ins 屈折变体（if 词形 + il 标签）。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Inflection {
     /// 变体词形（'/' 分隔符已清理）
     pub display: String,
+    /// inflection label（il，如 "plural"/"or"/"also"；可空）
+    #[serde(default)]
+    pub label: String,
 }
 
-/// uros 派生词条（defined run-on）。
+/// uros 派生词条（undefined run-on，无释义）。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RunOn {
     /// 派生词词形（'*' 分隔符已清理）
@@ -109,6 +134,78 @@ pub struct RunOn {
     /// （属于派生词而非词头，不混入 audio_codes 变体）
     #[serde(default)]
     pub audio_code: String,
+    /// 标签（uros.sls + uros.lbs）
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// utxt 例句（vis 已转纯文本）
+    #[serde(default)]
+    pub examples: Vec<String>,
+}
+
+/// dros 带释义派生短语（defined run-on，如 abide → "abide by"）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DRunOn {
+    /// 派生短语（'*' 已清理）
+    pub drp: String,
+    /// 词性（可缺）
+    #[serde(default)]
+    pub fl: String,
+    /// 自带释义（sseq 展开，含 sn/text/examples）
+    #[serde(default)]
+    pub senses: Vec<Sense>,
+}
+
+/// vrs 变体拼写（如 kabbalah → kabala/cabala）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Variant {
+    /// 变体标签（如 "or"/"or less commonly"；可空）
+    #[serde(default)]
+    pub vl: String,
+    /// 变体词形（'*' 已清理）
+    pub va: String,
+}
+
+/// quotes 引文（含出处）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Quote {
+    pub text: String,
+    /// aq.auth 作者
+    #[serde(default)]
+    pub auth: String,
+    /// aq.source 来源
+    #[serde(default)]
+    pub source: String,
+    /// aq.aqdate 日期
+    #[serde(default)]
+    pub date: String,
+}
+
+/// usages / syns 段落（pl 标题 + pt 正文 + 例句）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TextBlock {
+    /// 段落标题（pl，如 "synonyms"）
+    pub label: String,
+    /// pt 内 text 元素拼接（markup 已转纯文本）
+    pub text: String,
+    /// pt 内 vis 例句
+    #[serde(default)]
+    pub examples: Vec<String>,
+}
+
+/// art 插图（artid → merriam-webster.com/art/dict/{artid}.htm）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Artwork {
+    pub artid: String,
+    /// caption 图注（markup 已转纯文本）
+    #[serde(default)]
+    pub caption: String,
+}
+
+/// table 表格引用。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TableRef {
+    pub tableid: String,
+    pub display: String,
 }
 
 /// cxs 交叉引用（cxref，如 "also"/"synonym of"）。
@@ -172,6 +269,36 @@ pub struct MwEntry {
     /// 响应中附带的独立短语词条（combine 时分离）
     #[serde(default)]
     pub phrases: Vec<PhraseEntry>,
+    /// hwi.psl 音标标签（如 "chiefly US"）
+    #[serde(default)]
+    pub pron_label: Option<String>,
+    /// vrs 变体拼写
+    #[serde(default)]
+    pub variants: Vec<Variant>,
+    /// ahws 备选词头
+    #[serde(default)]
+    pub alt_headwords: Vec<String>,
+    /// dros 带释义派生短语
+    #[serde(default)]
+    pub dros: Vec<DRunOn>,
+    /// dxnls 方向性参见（markup 已转纯文本）
+    #[serde(default)]
+    pub dxnls: Vec<String>,
+    /// usages 用法讨论
+    #[serde(default)]
+    pub usages: Vec<TextBlock>,
+    /// syns 同义词辨析
+    #[serde(default)]
+    pub syns: Vec<TextBlock>,
+    /// quotes 引文
+    #[serde(default)]
+    pub quotes: Vec<Quote>,
+    /// art 插图
+    #[serde(default)]
+    pub art: Option<Artwork>,
+    /// table 表格引用
+    #[serde(default)]
+    pub table: Option<TableRef>,
     /// MW 完整 JSON 报文（单 entry；数组场景由 parser 分别产出）
     pub raw_json: String,
 }
@@ -262,7 +389,7 @@ impl CedictRecord {
 }
 
 /// 合并后的词条（UI 渲染的唯一来源）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MergedEntry {
     /// 显示词形：MW hwi.hw 优先，缺则 ECDICT word，再缺则查询原词
     pub headword_display: String,
@@ -313,6 +440,36 @@ pub struct MergedEntry {
     /// 冒犯性标记（meta.offensive）
     #[serde(default)]
     pub offensive: bool,
+    /// hwi.psl 音标标签
+    #[serde(default)]
+    pub pron_label: Option<String>,
+    /// vrs 变体拼写
+    #[serde(default)]
+    pub variants: Vec<Variant>,
+    /// ahws 备选词头
+    #[serde(default)]
+    pub alt_headwords: Vec<String>,
+    /// dros 带释义派生短语
+    #[serde(default)]
+    pub dros: Vec<DRunOn>,
+    /// dxnls 方向性参见
+    #[serde(default)]
+    pub dxnls: Vec<String>,
+    /// usages 用法讨论
+    #[serde(default)]
+    pub usages: Vec<TextBlock>,
+    /// syns 同义词辨析
+    #[serde(default)]
+    pub syns: Vec<TextBlock>,
+    /// quotes 引文
+    #[serde(default)]
+    pub quotes: Vec<Quote>,
+    /// art 插图
+    #[serde(default)]
+    pub art: Option<Artwork>,
+    /// table 表格引用
+    #[serde(default)]
+    pub table: Option<TableRef>,
 }
 
 /// 中文链候选条目。

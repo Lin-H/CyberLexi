@@ -364,6 +364,7 @@ fn cedict_entry(key: &str, recs: &[crate::domain::types::CedictRecord]) -> Merge
         cross_refs: Vec::new(),
         offensive: false,
         phrases: Vec::new(),
+        ..MergedEntry::default()
     }
 }
 

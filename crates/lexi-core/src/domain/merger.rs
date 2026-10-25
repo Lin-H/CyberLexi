@@ -55,6 +55,21 @@ pub fn combine_entries(entries: Vec<MwEntry>) -> MwEntry {
         first.inflections.extend(e.inflections);
         first.cross_refs.extend(e.cross_refs);
         first.alt_phonetics.extend(e.alt_phonetics);
+        first.dros.extend(e.dros);
+        first.usages.extend(e.usages);
+        first.syns.extend(e.syns);
+        first.quotes.extend(e.quotes);
+        first.dxnls.extend(e.dxnls);
+        for va in e.variants {
+            if !first.variants.iter().any(|v| v.va == va.va) {
+                first.variants.push(va);
+            }
+        }
+        for hw in e.alt_headwords {
+            if !first.alt_headwords.contains(&hw) {
+                first.alt_headwords.push(hw);
+            }
+        }
         if first.phonetic.is_empty() {
             first.phonetic = e.phonetic;
         }
@@ -72,6 +87,15 @@ pub fn combine_entries(entries: Vec<MwEntry>) -> MwEntry {
         }
         if first.meta.is_none() {
             first.meta = e.meta;
+        }
+        if first.pron_label.is_none() {
+            first.pron_label = e.pron_label;
+        }
+        if first.art.is_none() {
+            first.art = e.art;
+        }
+        if first.table.is_none() {
+            first.table = e.table;
         }
     }
     first.phrases = phrases;
@@ -192,8 +216,7 @@ impl ResultMerger {
                         sn: Some((i + 1).to_string()),
                         pos,
                         text: body,
-                        examples: Vec::new(),
-                        subsenses: Vec::new(),
+                        ..Sense::default()
                     }
                 })
                 .collect(),
@@ -225,21 +248,30 @@ impl ResultMerger {
         };
 
         // MW 结构化字段直通（无 MW 时空值）
-        let (hom, stems, meta, alt_phonetics, inflections, run_ons, cross_refs, phrases, offensive) =
-            match &mw {
-                Some(m) => (
-                    m.hom.clone(),
-                    m.stems.clone(),
-                    m.meta.clone(),
-                    m.alt_phonetics.clone(),
-                    m.inflections.clone(),
-                    m.run_ons.clone(),
-                    m.cross_refs.clone(),
-                    m.phrases.clone(),
-                    m.meta.as_ref().is_some_and(|x| x.offensive),
-                ),
-                None => Default::default(),
-            };
+        let empty = MwEntry::default();
+        let m = mw.as_ref().unwrap_or(&empty);
+        let (hom, stems, meta, alt_phonetics, inflections, run_ons, cross_refs, phrases, offensive,
+             pron_label, variants, alt_headwords, dros, dxnls, usages, syns, quotes, art, table) = (
+            m.hom.clone(),
+            m.stems.clone(),
+            m.meta.clone(),
+            m.alt_phonetics.clone(),
+            m.inflections.clone(),
+            m.run_ons.clone(),
+            m.cross_refs.clone(),
+            m.phrases.clone(),
+            m.meta.as_ref().is_some_and(|x| x.offensive),
+            m.pron_label.clone(),
+            m.variants.clone(),
+            m.alt_headwords.clone(),
+            m.dros.clone(),
+            m.dxnls.clone(),
+            m.usages.clone(),
+            m.syns.clone(),
+            m.quotes.clone(),
+            m.art.clone(),
+            m.table.clone(),
+        );
 
         MergedEntry {
             headword_display,
@@ -265,6 +297,16 @@ impl ResultMerger {
             cross_refs,
             phrases,
             offensive,
+            pron_label,
+            variants,
+            alt_headwords,
+            dros,
+            dxnls,
+            usages,
+            syns,
+            quotes,
+            art,
+            table,
         }
     }
 }

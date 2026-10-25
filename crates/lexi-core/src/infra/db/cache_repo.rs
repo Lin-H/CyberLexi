@@ -301,7 +301,7 @@ fn replay_or_columns(
     if !entries.is_empty() {
         return crate::domain::merger::combine_entries(entries);
     }
-    MwEntry {
+    let mut entry = MwEntry {
         headword: headword.unwrap_or_default(),
         phonetic: phonetic.unwrap_or_default(),
         pos: pos.unwrap_or_default(),
@@ -319,9 +319,12 @@ fn replay_or_columns(
         inflections: decode_json_or_default(&ins_json),
         run_ons: decode_json_or_default(&uros_json),
         cross_refs: decode_json_or_default(&cxs_json),
-        phrases: Vec::new(),
-        raw_json: raw_json.to_string(),
-    }
+        // 列兜底路径（raw 解析失败才会走到）：新增字段无列可回填，
+        // 留空即可——正常缓存走 raw 重放获得全部新字段
+        ..MwEntry::default()
+    };
+    entry.raw_json = raw_json.to_string();
+    entry
 }
 
 fn decode_json_or_default<T: serde::de::DeserializeOwned + Default>(s: &Option<String>) -> T {
@@ -483,9 +486,11 @@ mod tests {
             fl: "adverb".into(),
             phonetic: String::new(),
             audio_code: String::new(),
+            ..Default::default()
         }];
         e.inflections = vec![crate::domain::types::Inflection {
             display: "voluminously".into(),
+            ..Default::default()
         }];
         e.cross_refs = vec![crate::domain::types::CrossRef {
             label: "synonym of".into(),
