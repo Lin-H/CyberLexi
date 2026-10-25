@@ -116,6 +116,18 @@ pub struct CrossRef {
     pub refs: Vec<String>,
 }
 
+/// MW 返回的独立短语词条（如查询 remain 附带的 "remain to be seen"）。
+/// hw/meta.id 含空格即为短语——不并入义项，独立展示。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PhraseEntry {
+    pub headword: String,
+    /// 词性（通常 "phrase"）
+    pub pos: String,
+    /// 首条释义（shortdef 优先）
+    pub definition: String,
+    pub example: Option<String>,
+}
+
 /// Merriam-Webster Collegiate 词条（我方使用的子集，完整报文落 `raw_json`）。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MwEntry {
@@ -153,6 +165,9 @@ pub struct MwEntry {
     /// cxs 交叉引用
     #[serde(default)]
     pub cross_refs: Vec<CrossRef>,
+    /// 响应中附带的独立短语词条（combine 时分离）
+    #[serde(default)]
+    pub phrases: Vec<PhraseEntry>,
     /// MW 完整 JSON 报文（单 entry；数组场景由 parser 分别产出）
     pub raw_json: String,
 }
@@ -288,6 +303,9 @@ pub struct MergedEntry {
     /// 交叉引用（cxs）
     #[serde(default)]
     pub cross_refs: Vec<CrossRef>,
+    /// 同词附带的独立短语词条（remain to be seen 等）
+    #[serde(default)]
+    pub phrases: Vec<PhraseEntry>,
     /// 冒犯性标记（meta.offensive）
     #[serde(default)]
     pub offensive: bool,

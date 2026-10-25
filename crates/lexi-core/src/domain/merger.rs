@@ -6,10 +6,78 @@
 //! - 词频/考试标签：ECDICT；
 //! - headword 以 MW `hwi.hw` 为准回写显示。
 
-use super::types::{EcdictRecord, MergedEntry, MwEntry, Sense, SourceTag};
+use super::types::{EcdictRecord, MergedEntry, MwEntry, PhraseEntry, Sense, SourceTag};
 
 #[derive(Default)]
 pub struct ResultMerger;
+
+/// 多词条合并（MW 对一个词可能返回多个 entry）：
+/// - **同形词条**（remain:1 动词 / remain:2 名词）：首 entry 为骨架，
+///   senses/audio/stems 等串联；
+/// - **短语词条**（hw 或 meta.id 含空格，如 "remain to be seen"）：
+///   不并入义项，收集为 `phrases` 独立展示；
+/// - `raw_json` 存全 entry 的 JSON 数组（缓存重放时还原完整合并结果）。
+pub fn combine_entries(entries: Vec<MwEntry>) -> MwEntry {
+    let mut it = entries.into_iter();
+    let mut first = it.next().expect("combine called with entries");
+    let mut phrases: Vec<PhraseEntry> = Vec::new();
+    let mut all_raw = vec![first.raw_json.clone()];
+    for e in it {
+        all_raw.push(e.raw_json.clone());
+        let is_phrase = e.headword.contains(' ')
+            || e.meta.as_ref().is_some_and(|m| m.id.contains(' '));
+        if is_phrase {
+            phrases.push(PhraseEntry {
+                headword: e.headword.clone(),
+                pos: e.pos.clone(),
+                definition: e
+                    .short_defs
+                    .first()
+                    .cloned()
+                    .or_else(|| e.senses.first().map(|s| s.text.clone()))
+                    .unwrap_or_default(),
+                example: e.senses.first().and_then(|s| s.examples.first().cloned()),
+            });
+            continue;
+        }
+        first.senses.extend(e.senses);
+        for c in e.audio_codes {
+            if !first.audio_codes.contains(&c) {
+                first.audio_codes.push(c);
+            }
+        }
+        for s in e.stems {
+            if !first.stems.contains(&s) {
+                first.stems.push(s);
+            }
+        }
+        first.run_ons.extend(e.run_ons);
+        first.inflections.extend(e.inflections);
+        first.cross_refs.extend(e.cross_refs);
+        first.alt_phonetics.extend(e.alt_phonetics);
+        if first.phonetic.is_empty() {
+            first.phonetic = e.phonetic;
+        }
+        if first.pos.is_empty() {
+            first.pos = e.pos;
+        }
+        if first.etymology.is_none() {
+            first.etymology = e.etymology;
+        }
+        if first.date.is_none() {
+            first.date = e.date;
+        }
+        if first.hom.is_none() {
+            first.hom = e.hom;
+        }
+        if first.meta.is_none() {
+            first.meta = e.meta;
+        }
+    }
+    first.phrases = phrases;
+    first.raw_json = format!("[{}]", all_raw.join(","));
+    first
+}
 
 /// ECDICT 中文行行首词性（"n. 测试…"）→ (完整词性, 去前缀文本)。
 /// 无法识别时返回 (None, 原文)。
@@ -157,7 +225,7 @@ impl ResultMerger {
         };
 
         // MW 结构化字段直通（无 MW 时空值）
-        let (hom, stems, meta, alt_phonetics, inflections, run_ons, cross_refs, offensive) =
+        let (hom, stems, meta, alt_phonetics, inflections, run_ons, cross_refs, phrases, offensive) =
             match &mw {
                 Some(m) => (
                     m.hom.clone(),
@@ -167,6 +235,7 @@ impl ResultMerger {
                     m.inflections.clone(),
                     m.run_ons.clone(),
                     m.cross_refs.clone(),
+                    m.phrases.clone(),
                     m.meta.as_ref().is_some_and(|x| x.offensive),
                 ),
                 None => Default::default(),
@@ -194,6 +263,7 @@ impl ResultMerger {
             inflections,
             run_ons,
             cross_refs,
+            phrases,
             offensive,
         }
     }
@@ -311,6 +381,58 @@ mod tests {
         assert_eq!(m.headword_display, "zzz");
         assert!(m.sources.is_empty());
         assert!(m.short_defs.is_empty());
+    }
+
+    /// MW remain 实测结构：remain:1（动词）+ remain:2（名词）同形合并，
+    /// "remain to be seen" / "right to remain silent"（hw 含空格）分离为
+    /// 短语词条，不混入 senses；raw_json 变为全 entry 数组。
+    #[test]
+    fn combine_separates_phrase_entries_and_merges_homographs() {
+        let mk = |hw: &str, id: &str, fl: &str, sns: Vec<&str>| MwEntry {
+            headword: hw.into(),
+            pos: fl.into(),
+            senses: sns
+                .iter()
+                .map(|sn| Sense {
+                    sn: Some(sn.to_string()),
+                    ..Default::default()
+                })
+                .collect(),
+            meta: Some(crate::domain::types::MwMeta {
+                id: id.into(),
+                ..Default::default()
+            }),
+            // raw 与结构体同构（含 def.sseq），保证重放还原
+            raw_json: {
+                let senses = sns
+                    .iter()
+                    .map(|sn| format!("[\"sense\",{{\"sn\":\"{sn}\",\"dt\":[[\"text\",\"d\"]]}}]"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "{{\"meta\":{{\"id\":\"{id}\"}},\"hwi\":{{\"hw\":\"{hw}\"}},\"fl\":\"{fl}\",\"def\":[{{\"sseq\":[[{senses}]]}}]}}"
+                )
+            },
+            ..Default::default()
+        };
+        let entries = vec![
+            mk("remain", "remain:1", "verb", vec!["1 a", "b", "2", "3"]),
+            mk("remain", "remain:2", "noun", vec!["1", "2", "3"]),
+            mk("remain to be seen", "remain to be seen", "phrase", vec![]),
+            mk("right to remain silent", "right to remain silent", "phrase", vec![]),
+        ];
+        let combined = combine_entries(entries);
+        // 同形合并：4 + 3 个义项；短语不进 senses
+        assert_eq!(combined.senses.len(), 7);
+        assert_eq!(combined.phrases.len(), 2);
+        assert_eq!(combined.phrases[0].headword, "remain to be seen");
+        assert_eq!(combined.phrases[0].pos, "phrase");
+        // raw_json 是全 entry 数组，可再次重放
+        let replayed = crate::infra::mw::parse_cached_entries(&combined.raw_json);
+        assert_eq!(replayed.len(), 4);
+        let recombined = combine_entries(replayed);
+        assert_eq!(recombined.senses.len(), 7);
+        assert_eq!(recombined.phrases.len(), 2);
     }
 
     #[test]

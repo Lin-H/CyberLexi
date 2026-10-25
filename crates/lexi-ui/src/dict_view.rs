@@ -309,14 +309,101 @@ fn audio_variants(entry: &MergedEntry) -> Div {
 fn body(entry: &MergedEntry) -> Div {
     let mut col = div().flex().flex_col();
 
-    // 释义卡片
+    // 释义卡片（current_div：字母义项的归属 division，如 "1 a" 后的
+    // "b" 显示为大数字 1 + 小字母 b）
     if !entry.senses.is_empty() {
         col = col.child(section_label("Definition · 释义"));
         let mut list = div().flex().flex_col().gap(px(14.));
+        let mut current_div: Option<String> = None;
         for (i, sense) in entry.senses.iter().enumerate() {
-            list = list.child(sense_card(i, sense, entry));
+            let (num, sub, level) = classify_sn(sense.sn.as_deref(), current_div.as_deref());
+            if let Some(d) = div_number(sense.sn.as_deref()) {
+                current_div = Some(d);
+            }
+            list = list.child(sense_card(i, sense, entry, num, sub, level));
         }
         col = col.child(list);
+    }
+
+    // 相关短语（MW 附带的独立短语词条，如 remain to be seen）
+    if !entry.phrases.is_empty() {
+        let mut grid = div().flex().flex_col().gap(px(10.));
+        for (pi, ph) in entry.phrases.iter().enumerate() {
+            let target = ph.headword.clone();
+            let mut card = div()
+                .id(("phrase", pi))
+                .cursor_pointer()
+                .relative()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .px(px(16.))
+                .py(px(13.))
+                .rounded_xl()
+                .bg(grad(
+                    155.,
+                    with_alpha(Neon::violet(), 0.06),
+                    with_alpha(hex("#070b13"), 0.6),
+                ))
+                .border_1()
+                .border_color(with_alpha(Neon::violet(), 0.2))
+                .hover(|d| {
+                    d.border_color(with_alpha(Neon::violet(), 0.5))
+                        .shadow(vec![crate::theme::glow(Neon::violet(), 0.2, 24.)])
+                })
+                .on_click(move |_, _, _| {
+                    crate::send_global(UiCommand::Query(target.clone()));
+                })
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .text_base()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(hex("#e3c6ff"))
+                                .child(ph.headword.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family(crate::theme::MONO_FONT)
+                                .text_color(Neon::violet())
+                                .child(ph.pos.to_uppercase()),
+                        ),
+                );
+            if !ph.definition.is_empty() {
+                card = card.child(
+                    div()
+                        .text_sm()
+                        .line_height(relative(1.6))
+                        .text_color(Neon::text())
+                        .child(ph.definition.clone()),
+                );
+            }
+            if let Some(ex) = &ph.example {
+                card = card.child(
+                    div()
+                        .pl(px(12.))
+                        .border_l_2()
+                        .border_color(with_alpha(Neon::violet(), 0.25))
+                        .child(
+                            div()
+                                .text_sm()
+                                .italic()
+                                .line_height(relative(1.6))
+                                .text_color(Neon::example())
+                                .child(format!("“{ex}”")),
+                        ),
+                );
+            }
+            grid = grid.child(card);
+        }
+        col = col
+            .child(div().mt(px(10.)).child(section_label("Phrases · 相关短语")))
+            .child(grid);
     }
 
     // 交叉引用（cxs：近义/参见 chips）
@@ -451,45 +538,99 @@ fn body(entry: &MergedEntry) -> Div {
     col
 }
 
-fn sense_card(i: usize, sense: &Sense, entry: &MergedEntry) -> Div {
-    let accent = sense_accent(i);
-    // sn "1 a" → 主编号 + 小字母
-    let sn = sense.sn.clone().unwrap_or_default();
-    // 层级（视觉缩进依据）：纯数字=0；字母（含 "1 a" 的 a）=1；
-    // 括号形式 "(2)" = 2（在 move 之前计算）
-    let level = sn_level(&sn);
-    let (num, sub) = match sn.split_once(' ') {
-        Some((a, b)) => (a.to_string(), b.to_string()),
-        None => (sn, String::new()),
+/// MW sn → (大编号, 小字母/括号标, 层级)。规则（按 MW 实测 remain 报文）：
+/// - "N" / "N a"：division 顶级（"1 a" 是 division 1 的首义项，不是二级）
+/// - 纯字母 "b"：division 内子义项 → 补当前 division 编号（大数字 N + 小 b）
+/// - "(x)"：字母义项下的再细分 → 二级缩进，编号列直接显示 "(x)"
+/// - 无 sn：连续/内部义项 → "·" 点标 + 一级缩进（不显示列表序号假编号）
+fn classify_sn(sn: Option<&str>, current_div: Option<&str>) -> (Option<String>, String, usize) {
+    let Some(sn) = sn.map(str::trim).filter(|s| !s.is_empty()) else {
+        return (None, "·".into(), 1);
     };
+    if sn.starts_with('(') && sn.ends_with(')') {
+        return (None, sn.to_string(), 2);
+    }
+    let mut tokens = sn.split_whitespace();
+    match (tokens.next(), tokens.next()) {
+        // "N" 或 "N a"
+        (Some(n), sub) if n.chars().all(|c| c.is_ascii_digit()) => (
+            Some(n.to_string()),
+            sub.unwrap_or_default().to_string(),
+            0,
+        ),
+        // 纯字母 "b"
+        (Some(letter), None) if letter.chars().all(|c| c.is_ascii_alphabetic()) => (
+            current_div.map(str::to_string),
+            letter.to_string(),
+            1,
+        ),
+        _ => (None, sn.to_string(), 0),
+    }
+}
+
+/// sn 中的 division 编号（用于后续纯字母义项补号）。
+fn div_number(sn: Option<&str>) -> Option<String> {
+    let sn = sn?.trim();
+    let first = sn.split_whitespace().next()?;
+    first
+        .chars()
+        .all(|c| c.is_ascii_digit())
+        .then(|| first.to_string())
+}
+
+fn sense_card(
+    i: usize,
+    sense: &Sense,
+    entry: &MergedEntry,
+    num: Option<String>,
+    sub: String,
+    level: usize,
+) -> Div {
+    let accent = sense_accent(i);
     let mut num_col = div()
-        .w(if level == 0 { px(52.) } else { px(38.) })
+        .w(if level == 0 { px(52.) } else { px(44.) })
         .flex_none()
         .flex()
         .flex_col()
         .items_end()
         .pt(px(2.))
         .text_color(accent);
+    // 无编号（"·" / "(x)"）时小号显示，否则大号
     num_col = num_col.child(
         div()
-            .text_size(match level {
-                0 => px(22.),
-                1 => px(17.),
+            .text_size(match (num.is_some(), level) {
+                (true, 0) => px(22.),
+                (true, _) => px(17.),
+                (false, 2) => px(13.),
                 _ => px(14.),
             })
-            .font_weight(if level == 0 { FontWeight::EXTRA_BOLD } else { FontWeight::BOLD })
+            .font_weight(if num.is_some() && level == 0 {
+                FontWeight::EXTRA_BOLD
+            } else {
+                FontWeight::BOLD
+            })
             .font_family(crate::theme::MONO_FONT)
             .line_height(relative(1.0))
-            .child(if num.is_empty() { (i + 1).to_string() } else { num }),
+            .child({
+                let label = num.clone().unwrap_or_else(|| sub.clone());
+                label
+            }),
     );
-    if !sub.is_empty() {
+    // 大编号存在且 sub 是字母（"1"+"a" / "1"+"b"）时小字显示字母；
+    // "(x)" 已作为主标显示，不重复
+    let sub_letter = (!sub.is_empty()
+        && sub != "·"
+        && !sub.starts_with('(')
+        && num.is_some())
+    .then_some(sub.clone());
+    if let Some(letter) = sub_letter {
         num_col = num_col.child(
             div()
                 .text_xs()
                 .mt(px(4.))
                 .text_color(Neon::sense_hint())
                 .font_family(crate::theme::MONO_FONT)
-                .child(sub),
+                .child(letter),
         );
     }
 
@@ -610,22 +751,6 @@ fn sense_card(i: usize, sense: &Sense, entry: &MergedEntry) -> Div {
 
 /// MW sn 形式 → 视觉层级：纯数字=0；字母（a/b/…，含 "1 a" 的字母位）=1；
 /// 括号 "(2)"=2（义项下的再细分）。
-fn sn_level(sn: &str) -> usize {
-    let s = sn.trim();
-    if s.is_empty() {
-        return 0;
-    }
-    if s.starts_with('(') && s.ends_with(')') {
-        return 2;
-    }
-    // "1 a" 取字母位；纯字母 → 1
-    let token = s.split_whitespace().last().unwrap_or(s);
-    if token.chars().all(|c| c.is_ascii_alphabetic()) {
-        1
-    } else {
-        0
-    }
-}
 
 fn cxs_row(entry: &MergedEntry) -> Div {
     let mut row = div().flex().flex_wrap().gap(px(8.));

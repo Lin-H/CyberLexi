@@ -48,17 +48,22 @@ pub fn parse_body(body: &str) -> anyhow::Result<MwResponse> {
     Ok(MwResponse::Entries(entries))
 }
 
-/// 缓存回放：raw_json（单 entry 对象；旧版可能是 entry 数组）→ MwEntry。
-/// 命中 raw 即重新全字段解析 —— 提取列仅作 raw 损坏时的兜底，
-/// 后续新增 MW 字段无需再为缓存做列迁移。
-pub fn parse_cached_entry(raw: &str) -> Option<MwEntry> {
-    let v: Value = serde_json::from_str(raw).ok()?;
-    let obj = match v {
-        Value::Array(items) => items.into_iter().find(|i| i.is_object())?,
-        Value::Object(o) => Value::Object(o),
-        _ => return None,
+/// 缓存回放：raw_json（combine 后为全 entry 的 JSON 数组；旧缓存可能是
+/// 单 entry 对象或 entry 数组）→ 全部 MwEntry，交 combine_entries 还原
+/// 完整合并结果（含短语分离）。后续新增 MW 字段无需再为缓存做列迁移。
+pub fn parse_cached_entries(raw: &str) -> Vec<MwEntry> {
+    let Ok(v) = serde_json::from_str::<Value>(raw) else {
+        return Vec::new();
     };
-    parse_entry(&obj).ok()
+    let objects: Vec<Value> = match v {
+        Value::Array(items) => items.into_iter().filter(|i| i.is_object()).collect(),
+        Value::Object(_) => vec![v],
+        _ => Vec::new(),
+    };
+    objects
+        .iter()
+        .filter_map(|o| parse_entry(o).ok())
+        .collect()
 }
 
 /// 提取单个 entry（homograph）。
@@ -251,6 +256,7 @@ fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
         inflections,
         run_ons,
         cross_refs,
+        phrases: Vec::new(),
         raw_json: serde_json::to_string(v)?,
     })
 }

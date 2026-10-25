@@ -112,28 +112,11 @@ impl CacheRepo for SqliteCacheRepo {
                     [&key],
                 )?;
 
-                let mw = crate::infra::mw::parse_cached_entry(&raw_json).unwrap_or_else(|| MwEntry {
-                    headword: headword.unwrap_or_default(),
-                    phonetic: phonetic.unwrap_or_default(),
-                    pos: pos.unwrap_or_default(),
-                    short_defs: decode_json_array(&short_defs.unwrap_or_default()),
-                    senses: serde_json::from_str(&senses_json.unwrap_or_else(|| "[]".into()))
-                        .unwrap_or_default(),
-                    audio_codes: decode_json_array(&audio_codes.unwrap_or_default()),
-                    etymology,
-                    date: date_text,
-                    stems: decode_json_array(&stems.unwrap_or_default()),
-                    labels: decode_json_array(&labels.unwrap_or_default()),
-                    hom: hom.filter(|s| !s.is_empty()),
-                    meta: meta_json
-                        .as_deref()
-                        .and_then(|s| serde_json::from_str(s).ok()),
-                    alt_phonetics: decode_json_array(&altprs_json.unwrap_or_default()),
-                    inflections: decode_json_or_default(&ins_json),
-                    run_ons: decode_json_or_default(&uros_json),
-                    cross_refs: decode_json_or_default(&cxs_json),
-                    raw_json: raw_json.clone(),
-                });
+                // 首选：raw_json 全 entry 重放 + 重新合并（含短语分离、
+                // 免列迁移）；raw 损坏时回退提取列
+                let mw = replay_or_columns(&raw_json, headword, phonetic, pos, short_defs,
+                    senses_json, audio_codes, etymology, date_text, stems, labels,
+                    hom, meta_json, altprs_json, ins_json, uros_json, cxs_json);
                 Ok(Some(CachedEntry {
                     mw,
                     fetched_at,
@@ -196,26 +179,9 @@ impl CacheRepo for SqliteCacheRepo {
                 if fetched_at + ttl_days * 86_400 < now {
                     return Ok(None);
                 }
-                let mw = crate::infra::mw::parse_cached_entry(&raw_json).unwrap_or_else(|| MwEntry {
-                    headword: headword.unwrap_or_default(),
-                    phonetic: phonetic.unwrap_or_default(),
-                    pos: pos.unwrap_or_default(),
-                    short_defs: decode_json_array(&short_defs.unwrap_or_default()),
-                    senses: serde_json::from_str(&senses_json.unwrap_or_else(|| "[]".into()))
-                        .unwrap_or_default(),
-                    audio_codes: decode_json_array(&audio_codes.unwrap_or_default()),
-                    etymology,
-                    date: date_text,
-                    stems: decode_json_array(&stems.unwrap_or_default()),
-                    labels: decode_json_array(&labels.unwrap_or_default()),
-                    hom: hom.filter(|s| !s.is_empty()),
-                    meta: meta_json.as_deref().and_then(|s| serde_json::from_str(s).ok()),
-                    alt_phonetics: decode_json_array(&altprs_json.unwrap_or_default()),
-                    inflections: decode_json_or_default(&ins_json),
-                    run_ons: decode_json_or_default(&uros_json),
-                    cross_refs: decode_json_or_default(&cxs_json),
-                    raw_json: raw_json.clone(),
-                });
+                let mw = replay_or_columns(&raw_json, headword, phonetic, pos, short_defs,
+                    senses_json, audio_codes, etymology, date_text, stems, labels,
+                    hom, meta_json, altprs_json, ins_json, uros_json, cxs_json);
                 Ok(Some(CachedEntry {
                     mw,
                     fetched_at,
@@ -308,6 +274,54 @@ impl CacheRepo for SqliteCacheRepo {
 
 fn decode_json_array(s: &str) -> Vec<String> {
     serde_json::from_str(s).unwrap_or_default()
+}
+
+/// raw_json 全 entry 重放 + 重新合并；raw 为空/损坏时用提取列拼装兜底。
+#[allow(clippy::too_many_arguments)]
+fn replay_or_columns(
+    raw_json: &str,
+    headword: Option<String>,
+    phonetic: Option<String>,
+    pos: Option<String>,
+    short_defs: Option<String>,
+    senses_json: Option<String>,
+    audio_codes: Option<String>,
+    etymology: Option<String>,
+    date_text: Option<String>,
+    stems: Option<String>,
+    labels: Option<String>,
+    hom: Option<String>,
+    meta_json: Option<String>,
+    altprs_json: Option<String>,
+    ins_json: Option<String>,
+    uros_json: Option<String>,
+    cxs_json: Option<String>,
+) -> MwEntry {
+    let entries = crate::infra::mw::parse_cached_entries(raw_json);
+    if !entries.is_empty() {
+        return crate::domain::merger::combine_entries(entries);
+    }
+    MwEntry {
+        headword: headword.unwrap_or_default(),
+        phonetic: phonetic.unwrap_or_default(),
+        pos: pos.unwrap_or_default(),
+        short_defs: decode_json_array(&short_defs.unwrap_or_default()),
+        senses: serde_json::from_str(&senses_json.unwrap_or_else(|| "[]".into()))
+            .unwrap_or_default(),
+        audio_codes: decode_json_array(&audio_codes.unwrap_or_default()),
+        etymology,
+        date: date_text,
+        stems: decode_json_array(&stems.unwrap_or_default()),
+        labels: decode_json_array(&labels.unwrap_or_default()),
+        hom: hom.filter(|s| !s.is_empty()),
+        meta: meta_json.as_deref().and_then(|s| serde_json::from_str(s).ok()),
+        alt_phonetics: decode_json_array(&altprs_json.unwrap_or_default()),
+        inflections: decode_json_or_default(&ins_json),
+        run_ons: decode_json_or_default(&uros_json),
+        cross_refs: decode_json_or_default(&cxs_json),
+        phrases: Vec::new(),
+        raw_json: raw_json.to_string(),
+    }
 }
 
 fn decode_json_or_default<T: serde::de::DeserializeOwned + Default>(s: &Option<String>) -> T {

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::domain::merger::ResultMerger;
 use crate::domain::normalizer::{Normalizer, NormalizedQuery};
 use crate::domain::types::{
-    Candidate, Lang, MergedEntry, MwEntry, QueryResult, Sense, SourceTag,
+    Candidate, Lang, MergedEntry, QueryResult, Sense, SourceTag,
 };
 use crate::infra::config::Config;
 use crate::infra::db::{CedictRepo, EcdictRepo, HistoryRepo, MetaRepo};
@@ -190,7 +190,7 @@ impl QueryOrchestrator {
         if let Some(client) = mw_guard.as_ref() {
             match client.lookup(&nq.key).await {
                 Ok(MwResponse::Entries(entries)) => {
-                    let combined = combine_entries(entries);
+                    let combined = crate::domain::merger::combine_entries(entries);
                     let cfg = self.cfg.read().await;
                     let ttl = cfg.cache_ttl_days;
                     drop(cfg);
@@ -318,50 +318,6 @@ impl QueryOrchestrator {
     }
 }
 
-/// 多 homograph 合并为单词条（首 entry 为骨架，senses/audio 串联）。
-/// 注意：cache.raw_json 保留首个 entry 的原始 JSON（完整报文数组在
-/// MW 响应层已各 entry 分开存储）。
-fn combine_entries(entries: Vec<MwEntry>) -> MwEntry {
-    let mut it = entries.into_iter();
-    let mut first = it.next().expect("combine called with entries");
-    for e in it {
-        first.senses.extend(e.senses);
-        for c in e.audio_codes {
-            if !first.audio_codes.contains(&c) {
-                first.audio_codes.push(c);
-            }
-        }
-        for s in e.stems {
-            if !first.stems.contains(&s) {
-                first.stems.push(s);
-            }
-        }
-        first.run_ons.extend(e.run_ons);
-        first.inflections.extend(e.inflections);
-        first.cross_refs.extend(e.cross_refs);
-        first.alt_phonetics.extend(e.alt_phonetics);
-        if first.phonetic.is_empty() {
-            first.phonetic = e.phonetic;
-        }
-        if first.pos.is_empty() {
-            first.pos = e.pos;
-        }
-        if first.etymology.is_none() {
-            first.etymology = e.etymology;
-        }
-        if first.date.is_none() {
-            first.date = e.date;
-        }
-        if first.hom.is_none() {
-            first.hom = e.hom;
-        }
-        if first.meta.is_none() {
-            first.meta = e.meta;
-        }
-    }
-    first
-}
-
 /// CEDICT 记录集 → 词条展示（点击候选后的详情）。
 fn cedict_entry(key: &str, recs: &[crate::domain::types::CedictRecord]) -> MergedEntry {
     let headword = recs.first().map(|r| r.simplified.clone()).unwrap_or_else(|| key.to_string());
@@ -407,6 +363,7 @@ fn cedict_entry(key: &str, recs: &[crate::domain::types::CedictRecord]) -> Merge
         run_ons: Vec::new(),
         cross_refs: Vec::new(),
         offensive: false,
+        phrases: Vec::new(),
     }
 }
 
