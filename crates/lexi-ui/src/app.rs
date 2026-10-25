@@ -50,6 +50,8 @@ pub struct AppView {
     nav_backing: bool,
     /// 当前展示的词（Entry 完成时更新；NotFound/候选列表不变）
     current_word: Option<String>,
+    /// 已收到过 worker 的启动配置同步（其后 ConfigSaved 才算用户保存）
+    boot_synced: bool,
     /// 配置镜像（worker 权威；ConfigSaved 回流刷新）
     pub cfg: Config,
     /// 强调色板（cfg.appearance.accent 派生）
@@ -140,6 +142,7 @@ impl AppView {
             nav_history: Vec::new(),
             nav_backing: false,
             current_word: None,
+            boot_synced: false,
             cfg: Config::default(),
             accent: AccentPalette::Cyan,
             book_filter: crate::book_view::BookFilter::All,
@@ -271,7 +274,13 @@ impl AppView {
             }
             BackendEvent::ConfigSaved(cfg) => {
                 self.apply_config(cfg);
-                self.notice = Some("配置已保存".into());
+                // 启动时的初始同步（boot 广播）不提示——"已保存"只在
+                // 设置页真实保存动作后显示
+                if self.boot_synced {
+                    self.notice = Some("配置已保存".into());
+                } else {
+                    self.boot_synced = true;
+                }
             }
             BackendEvent::WordBookChanged(items) => {
                 self.wordbook = items;
