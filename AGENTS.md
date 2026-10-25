@@ -49,6 +49,7 @@ bash scripts/fetch_assets.sh    # 离线词库资源再生成
 - `window.focus(&handle, cx)` 两参；div 默认 flex **row**（竖排必须显式 `.flex().flex_col()`，panel() 曾因此标题与内容并排）
 - Ctrl+K 等键位：`actions!` + `KeyBinding::new`；`SendKeys` 的 `^k` 在应用未聚焦时不可达，自动化测试用鼠标点击 + 直接送键
 - 无公开 `open_url` —— 外链（art/table）以文本形式展示
+- **gpui-pre Windows `zoom()` 只最大化不还原**（无条件 SW_MAXIMIZE，上游 bug）→ 自定义标题栏暂无最大化按钮；需要最大化用拖动区双击（HTCAPTION 系统行为，再双击/下拖还原）。窗口控制：`appears_transparent: true` 隐藏原生标题栏 + 顶栏空白区 `.window_control_area(Drag)` + 自绘 min/close（topbar.rs `window_controls`）
 
 ## 事件与状态规则
 

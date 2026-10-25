@@ -130,6 +130,9 @@ fn main() -> anyhow::Result<()> {
                     })),
                     titlebar: Some(TitlebarOptions {
                         title: Some("CyberLexi — 赛博英语词典".into()),
+                        // 隐藏原生标题栏（最小化/最大化/关闭）：顶栏自绘
+                        // 窗口控制按钮（见 topbar.rs window_controls）
+                        appears_transparent: true,
                         ..Default::default()
                     }),
                     ..Default::default()

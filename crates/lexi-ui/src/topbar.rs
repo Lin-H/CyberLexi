@@ -8,7 +8,7 @@ use gpui_kit::component::Sizable;
 use gpui_kit::*;
 
 use crate::app::AppView;
-use crate::theme::{grad, hex, steel, with_alpha, Neon};
+use crate::theme::{grad, hex, steel, white, with_alpha, Neon};
 use crate::widgets::{icon_button, kbd};
 
 pub fn render(view: &mut AppView, window: &mut Window, cx: &mut Context<AppView>) -> Div {
@@ -33,7 +33,14 @@ pub fn render(view: &mut AppView, window: &mut Window, cx: &mut Context<AppView>
         // 返回上一词（导航栈空时置灰）
         .child(back_button(view, cx));
 
-    bar = bar.child(div().flex_1());
+    // 窗口拖动区（自定义标题栏）：搜索框与右侧控件间的空白条。
+    // HTCAPTION 命中：系统级拖动 + 双击最大化 + 右键系统菜单
+    bar = bar.child(
+        div()
+            .flex_1()
+            .h_full()
+            .window_control_area(WindowControlArea::Drag),
+    );
 
     // MW 配额 chip（有 Key 时）
     if let Some((used, limit)) = view.quota {
@@ -86,7 +93,9 @@ pub fn render(view: &mut AppView, window: &mut Window, cx: &mut Context<AppView>
                     cx.notify();
                 })
             }),
-        );
+        )
+        // 自绘窗口控制（原生标题栏按钮已隐藏）
+        .child(window_controls(view, window, cx));
 
     // 首启导入进度：底缘 2px 渐变细条（不遮挡布局）
     if let Some((pct, _stage)) = view.import_progress.clone() {
@@ -145,6 +154,63 @@ fn back_button(view: &AppView, cx: &mut Context<AppView>) -> Stateful<Div> {
         btn = btn.child(Icon::new(IconName::ArrowLeft).with_size(px(15.)));
     }
     btn
+}
+
+/// 自绘窗口控制按钮组（最小化/关闭）：原生标题栏已通过
+/// appears_transparent 隐藏，按钮样式与 icon_button 一致（关闭 hover
+/// 为品红警示色）。最大化按钮暂缺：gpui-pre Windows 的 zoom() 只
+/// 最大化不还原（上游 bug）；需要最大化时双击顶栏拖动区（系统
+/// HTCAPTION 行为，再双击或下拖还原）。
+fn window_controls(_view: &AppView, _window: &Window, cx: &Context<AppView>) -> Div {
+    let mut group = div().flex().items_center().gap(px(2.)).ml(px(6.));
+
+    group = group.child(
+        div()
+            .id("win-min")
+            .cursor_pointer()
+            .w(px(30.))
+            .h(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .bg(white(0.03))
+            .border_1()
+            .border_color(steel(0.14))
+            .text_color(hex("#7e97ad"))
+            .hover(|d| {
+                d.text_color(Neon::cyan())
+                    .border_color(with_alpha(Neon::cyan(), 0.45))
+                    .shadow(vec![crate::theme::glow(Neon::cyan(), 0.18, 18.)])
+            })
+            .on_click(cx.listener(|_, _, window, _| window.minimize_window()))
+            .child(Icon::new(IconName::Minus).with_size(px(15.))),
+    );
+
+    group = group.child(
+        div()
+            .id("win-close")
+            .cursor_pointer()
+            .w(px(30.))
+            .h(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .bg(white(0.03))
+            .border_1()
+            .border_color(steel(0.14))
+            .text_color(hex("#7e97ad"))
+            .hover(|d| {
+                d.text_color(hex("#ffb0c8"))
+                    .border_color(with_alpha(Neon::magenta(), 0.55))
+                    .shadow(vec![crate::theme::glow(Neon::magenta(), 0.25, 18.)])
+            })
+            .on_click(cx.listener(|_, _, window, _| window.remove_window()))
+            .child(Icon::new(IconName::X).with_size(px(15.))),
+    );
+
+    group
 }
 
 fn search_box(view: &mut AppView, focused: bool, _cx: &mut Context<AppView>) -> Div {
