@@ -50,6 +50,11 @@ impl ResultMerger {
                     .map(|e| e.phonetic.clone())
             })
             .unwrap_or_default();
+        // IPA：独立保留 ECDICT 音标（与 MW 记音并列展示）
+        let ipa = ecdict
+            .as_ref()
+            .filter(|e| !e.phonetic.is_empty())
+            .map(|e| e.phonetic.clone());
 
         let pos = mw
             .as_ref()
@@ -81,6 +86,7 @@ impl ResultMerger {
                     sn: Some((i + 1).to_string()),
                     text,
                     examples: Vec::new(),
+                    subsenses: Vec::new(),
                 })
                 .collect(),
             _ => Vec::new(),
@@ -110,10 +116,27 @@ impl ResultMerger {
             None => (Vec::new(), None, None),
         };
 
+        // MW 结构化字段直通（无 MW 时空值）
+        let (hom, stems, meta, alt_phonetics, inflections, run_ons, cross_refs, offensive) =
+            match &mw {
+                Some(m) => (
+                    m.hom.clone(),
+                    m.stems.clone(),
+                    m.meta.clone(),
+                    m.alt_phonetics.clone(),
+                    m.inflections.clone(),
+                    m.run_ons.clone(),
+                    m.cross_refs.clone(),
+                    m.meta.as_ref().is_some_and(|x| x.offensive),
+                ),
+                None => Default::default(),
+            };
+
         MergedEntry {
             headword_display,
             normalized_key: queried_key.to_string(),
             phonetic,
+            ipa,
             pos,
             short_defs,
             senses,
@@ -124,6 +147,14 @@ impl ResultMerger {
             etymology,
             date,
             sources,
+            hom,
+            stems,
+            meta,
+            alt_phonetics,
+            inflections,
+            run_ons,
+            cross_refs,
+            offensive,
         }
     }
 }
@@ -143,6 +174,7 @@ mod tests {
                 sn: Some("1 a".into()),
                 text: "having or marked by great volume or bulk".into(),
                 examples: vec!["long voluminous tresses".into()],
+                ..Default::default()
             }],
             audio_codes: vec!["volumi02".into()],
             etymology: Some("Late Latin voluminosus".into()),
@@ -150,6 +182,7 @@ mod tests {
             stems: vec!["voluminous".into(), "voluminously".into()],
             labels: Vec::new(),
             raw_json: "[]".into(),
+            ..Default::default()
         }
     }
 
@@ -173,6 +206,7 @@ mod tests {
         let m = ResultMerger::new().merge(Some(mw()), Some(ecdict()), "voluminous");
         assert_eq!(m.headword_display, "voluminous");
         assert_eq!(m.phonetic, "və-ˈlü-mə-nəs"); // MW 音标优先
+        assert_eq!(m.ipa.as_deref(), Some("vəˈluːmɪnəs")); // ECDICT IPA 并列保留
         assert_eq!(m.pos, "adjective");
         assert_eq!(m.short_defs, vec!["having or marked by great volume"]);
         assert_eq!(m.audio_codes, vec!["volumi02"]);

@@ -1,21 +1,24 @@
-//! 主视图：搜索框（300ms 防抖 + Enter）、词条区、单词本侧栏、设置页、
-//! 离线横幅；后台事件泵把 BackendEvent 送进 UI 状态。
+//! 主视图：侧边栏 + 顶栏搜索 + 三视图（词典/单词本/设置）+ 特效层。
+//! 后台事件泵把 BackendEvent 送进 UI 状态；查询 300ms 防抖。
 
 use std::time::Duration;
 
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
-use lexi_core::domain::types::QueryResult;
+
+use lexi_core::domain::types::{QueryResult, WordSummary};
 use lexi_core::domain::wordbook::WordBookItem;
 use lexi_core::events::{BackendEvent, UiCommand};
+use lexi_core::infra::config::Config;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::components;
-use crate::theme::{with_alpha, CyberpunkTheme};
+use crate::theme::AccentPalette;
+use crate::FocusSearch;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Page {
-    Dictionary,
+    Dict,
+    Book,
     Settings,
 }
 
@@ -26,13 +29,27 @@ pub struct AppView {
     pub loading: bool,
     pub result: Option<QueryResult>,
     pub history: Vec<String>,
+    pub history_open: bool,
     pub wordbook: Vec<WordBookItem>,
+    pub wb_summaries: Vec<WordSummary>,
     pub offline: bool,
     pub quota: Option<(u32, u32)>,
-    /// 导入进度 (pct, stage)；Some 时顶部显示
+    /// 导入进度 (pct, stage)；Some 时顶栏显示细条
     pub import_progress: Option<(f32, String)>,
-    /// 一次性提示（导出/导入/错误）
+    /// 一次性提示（导出/导入/错误）→ 右下角 toast
     pub notice: Option<String>,
+    /// 侧边栏统计 (今日, 目标, 连续天数)
+    pub stats: (u32, u32, u32),
+    /// 离线词库行数
+    pub dict_counts: (i64, i64),
+    /// 配置镜像（worker 权威；ConfigSaved 回流刷新）
+    pub cfg: Config,
+    /// 强调色板（cfg.appearance.accent 派生）
+    pub accent: AccentPalette,
+    /// 单词本筛选
+    pub book_filter: crate::book_view::BookFilter,
+    pub add_word_open: bool,
+    pub add_word_input: Entity<InputState>,
     // 设置页输入
     pub key_input: Entity<InputState>,
     pub ttl_input: Entity<InputState>,
@@ -51,7 +68,11 @@ impl AppView {
         event_rx: std::sync::mpsc::Receiver<BackendEvent>,
     ) -> Self {
         let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("查词：English 或 中文 / 拼音（Enter 查询）")
+            InputState::new(window, cx)
+                .placeholder("搜索单词、短语或例句…")
+        });
+        let add_word_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("输入单词后回车（例：ephemeral / 你好）")
         });
         let key_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Merriam-Webster API Key（留空 = 离线模式）")
@@ -62,7 +83,7 @@ impl AppView {
             cx.new(|cx| InputState::new(window, cx).placeholder("数据包 zip 的完整路径…"));
 
         // 输入订阅：Change 防抖 300ms；Enter 立即查询
-        let sub = cx.subscribe_in(&input, window, |this, state, event, _window, cx| {
+        let sub_input = cx.subscribe_in(&input, window, |this, state, event, _window, cx| {
             let text = state.read(cx).value().to_string();
             match event {
                 InputEvent::Change => this.on_input_changed(text, cx),
@@ -88,24 +109,36 @@ impl AppView {
         })
         .detach();
 
+        // 添加单词输入：Enter = 查询并加入单词本
+        let sub_add = crate::book_view::subscribe_add_input(&add_word_input, window, cx);
+
         AppView {
             cmd_tx,
             input,
-            page: Page::Dictionary,
+            page: Page::Dict,
             loading: false,
             result: None,
             history: Vec::new(),
+            history_open: false,
             wordbook: Vec::new(),
+            wb_summaries: Vec::new(),
             offline: true,
             quota: None,
             import_progress: None,
             notice: None,
+            stats: (0, 20, 0),
+            dict_counts: (0, 0),
+            cfg: Config::default(),
+            accent: AccentPalette::Cyan,
+            book_filter: crate::book_view::BookFilter::All,
+            add_word_open: false,
+            add_word_input,
             key_input,
             ttl_input,
             max_input,
             import_path_input,
             debounce_seq: 0,
-            _subs: vec![sub],
+            _subs: vec![sub_input, sub_add],
         }
     }
 
@@ -139,6 +172,13 @@ impl AppView {
         cx.notify();
     }
 
+    fn apply_config(&mut self, cfg: Config) {
+        self.accent = AccentPalette::parse(&cfg.appearance.accent)
+            .unwrap_or(AccentPalette::Cyan);
+        self.cfg = cfg.clone();
+        crate::update_cfg_mirror(cfg);
+    }
+
     fn on_backend_event(&mut self, ev: BackendEvent, cx: &mut Context<Self>) {
         match ev {
             BackendEvent::QueryStarted(_) => {
@@ -146,6 +186,17 @@ impl AppView {
             }
             BackendEvent::QueryFinished { result, .. } => {
                 self.loading = false;
+                // 自动发音（设置开启 + 词条有音频码）
+                if self.cfg.audio.auto_play {
+                    if let QueryResult::Entry(entry) = &*result {
+                        if let Some(code) = entry.audio_codes.first() {
+                            let _ = self.cmd_tx.send(UiCommand::PlayAudio {
+                                code: code.clone(),
+                                ref_: "c".into(),
+                            });
+                        }
+                    }
+                }
                 self.result = Some(*result);
             }
             BackendEvent::OfflineMode(offline) => self.offline = offline,
@@ -158,6 +209,7 @@ impl AppView {
                 cedict_rows,
             } => {
                 self.import_progress = None;
+                self.dict_counts = (ecdict_rows as i64, cedict_rows as i64);
                 self.notice = Some(format!(
                     "词库导入完成：ECDICT {ecdict_rows} 条 / CEDICT {cedict_rows} 条"
                 ));
@@ -166,15 +218,33 @@ impl AppView {
                 self.import_progress = None;
                 self.notice = Some(format!("词库导入失败：{e}"));
             }
+            BackendEvent::DictStats { ecdict, cedict } => {
+                self.dict_counts = (ecdict, cedict);
+            }
             BackendEvent::AudioReady { .. } => {}
             BackendEvent::AudioFailed { code, reason } => {
                 self.notice = Some(format!("音频失败 [{code}]：{reason}"));
             }
-            BackendEvent::ConfigSaved(_) => {
+            BackendEvent::ConfigSaved(cfg) => {
+                self.apply_config(cfg);
                 self.notice = Some("配置已保存".into());
             }
-            BackendEvent::WordBookChanged(items) => self.wordbook = items,
+            BackendEvent::WordBookChanged(items) => {
+                self.wordbook = items;
+                // 词表变化 → 请求刷新卡片摘要（离线聚合）
+                let _ = self.cmd_tx.send(UiCommand::RequestWordBookDetails);
+            }
+            BackendEvent::WordBookDetails(summaries) => {
+                self.wb_summaries = summaries;
+            }
             BackendEvent::HistoryChanged(items) => self.history = items,
+            BackendEvent::StatsUpdated {
+                today_count,
+                goal,
+                streak_days,
+            } => {
+                self.stats = (today_count, goal, streak_days);
+            }
             BackendEvent::PackageDone(res) => {
                 self.notice = Some(match res {
                     Ok(msg) => msg,
@@ -187,259 +257,144 @@ impl AppView {
         }
         cx.notify();
     }
-
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let header = self.render_header(cx);
-        let search = self.render_search(cx);
-        let body = match self.page {
-            Page::Dictionary => self.render_dictionary(cx),
-            Page::Settings => components::render_settings(self, cx),
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Ctrl+K → 聚焦搜索框
+        let input = self.input.clone();
+
+        // 特效层（可关：扫描线 / 网格）
+        let grid = if self.cfg.appearance.grid {
+            div().child(crate::effects::grid_layer())
+        } else {
+            div()
+        };
+        let scanlines = if self.cfg.appearance.scanlines {
+            div().child(crate::effects::scanline_layer())
+        } else {
+            div()
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(CyberpunkTheme::bg_base())
-            .text_color(CyberpunkTheme::text())
-            .font_family("JetBrains Mono")
-            .child(header)
-            .child(search)
-            .child(div().flex_1().overflow_hidden().child(body))
-    }
-}
-
-impl AppView {
-    fn render_header(&mut self, cx: &mut Context<Self>) -> Div {
-        let mut row = div().flex().items_center().gap_3().px_4().py_2();
-
-        row = row
-            .child(
+        // 主布局
+        let sidebar = crate::sidebar::render(self, cx);
+        let topbar = crate::topbar::render(self, window, cx);
+        let body = match self.page {
+            Page::Dict => {
+                let content = crate::dict_view::render(self, cx);
                 div()
-                    .text_xl()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(CyberpunkTheme::cyan())
-                    .child("CyberLexi"),
-            )
-            .child(
+                    .id("view-dict")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(px(28.))
+                    .py(px(26.))
+                    .pb(px(80.))
+                    .child(content)
+            }
+            Page::Book => {
+                let content = crate::book_view::render(self, cx);
                 div()
-                    .id("tab-dict")
-                    .cursor_pointer()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(if self.page == Page::Dictionary {
-                        CyberpunkTheme::cyan()
-                    } else {
-                        CyberpunkTheme::border()
-                    })
-                    .text_color(if self.page == Page::Dictionary {
-                        CyberpunkTheme::cyan()
-                    } else {
-                        CyberpunkTheme::text()
-                    })
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        v.page = Page::Dictionary;
-                        cx.notify();
-                    }))
-                    .child("词典"),
-            )
-            .child(
+                    .id("view-book")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(px(28.))
+                    .py(px(26.))
+                    .pb(px(80.))
+                    .child(content)
+            }
+            Page::Settings => {
+                let content = crate::settings_view::render(self, cx);
                 div()
-                    .id("tab-settings")
-                    .cursor_pointer()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(if self.page == Page::Settings {
-                        CyberpunkTheme::cyan()
-                    } else {
-                        CyberpunkTheme::border()
-                    })
-                    .text_color(if self.page == Page::Settings {
-                        CyberpunkTheme::cyan()
-                    } else {
-                        CyberpunkTheme::text()
-                    })
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        v.page = Page::Settings;
-                        cx.notify();
-                    }))
-                    .child("设置"),
-            )
-            .child(div().flex_1());
+                    .id("view-settings")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(px(28.))
+                    .py(px(26.))
+                    .pb(px(80.))
+                    .child(content)
+            }
+        };
 
-        // 配额（有 Key 时）
-        if let Some((used, limit)) = self.quota {
-            if limit > 0 {
-                row = row.child(
+        // 右下角 toast
+        let toast = self.notice.clone().map(|text| {
+            div()
+                .absolute()
+                .bottom(px(20.))
+                .right(px(20.))
+                .max_w(px(420.))
+                .id("toast")
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(14.))
+                .py(px(10.))
+                .rounded_lg()
+                .bg(crate::theme::Neon::bg_surf())
+                .border_1()
+                .border_color(crate::theme::with_alpha(crate::theme::Neon::lime(), 0.5))
+                .shadow(vec![crate::theme::glow(
+                    crate::theme::Neon::lime(),
+                    0.2,
+                    24.,
+                )])
+                .on_click(cx.listener(|v, _, _, cx| {
+                    v.notice = None;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .text_sm()
+                        .line_height(relative(1.4))
+                        .text_color(crate::theme::Neon::text())
+                        .child(text),
+                )
+                .child(
                     div()
                         .text_xs()
-                        .text_color(CyberpunkTheme::dim())
-                        .child(format!("MW {used}/{limit}")),
-                );
-            }
-        }
+                        .text_color(crate::theme::Neon::muted())
+                        .child("✕"),
+                )
+        });
 
-        // 离线模式横幅（常驻）
-        if self.offline {
-            row = row.child(
+        div()
+            .relative()
+            .flex()
+            .size_full()
+            .bg(crate::theme::Neon::bg())
+            .text_color(crate::theme::Neon::text())
+            .font_family(crate::theme::UI_FONT)
+            // Ctrl+K
+            .on_action(cx.listener(move |_this, _: &FocusSearch, window, cx| {
+                let handle = input.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+                cx.notify();
+            }))
+            // 底层：氛围光 + 网格
+            .child(crate::effects::glow_layer())
+            .child(grid)
+            // 内容层
+            .child(
                 div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(CyberpunkTheme::yellow())
-                    .text_color(CyberpunkTheme::yellow())
-                    .text_xs()
-                    .child("离线模式"),
-            );
-        }
-
-        // 一次性提示
-        if let Some(notice) = self.notice.clone() {
-            row = row.child(
-                div()
-                    .id("notice-dismiss")
-                    .cursor_pointer()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(with_alpha(CyberpunkTheme::green(), 0.08))
-                    .border_1()
-                    .border_color(CyberpunkTheme::green())
-                    .text_color(CyberpunkTheme::green())
-                    .text_xs()
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        v.notice = None;
-                        cx.notify();
-                    }))
-                    .child(notice),
-            );
-        }
-
-        // 导入进度
-        let mut col = div().flex().flex_col();
-        if let Some((pct, stage)) = self.import_progress.clone() {
-            col = col.child(
-                div()
+                    .relative()
                     .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_4()
-                    .py_1()
-                    .text_xs()
-                    .text_color(CyberpunkTheme::cyan())
-                    .child(format!("首次导入词库… {stage}"))
+                    .size_full()
+                    .child(sidebar)
                     .child(
                         div()
-                            .h_1()
-                            .w_64()
-                            .rounded_full()
-                            .bg(CyberpunkTheme::bg_elev())
-                            .child(
-                                div()
-                                    .h_1()
-                                    .w(rems(pct / 100.0 * 4.0))
-                                    .rounded_full()
-                                    .bg(CyberpunkTheme::cyan()),
-                            ),
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .flex_col()
+                            .child(topbar)
+                            .child(body),
                     ),
-            );
-        }
-        col.child(row)
-            .bg(CyberpunkTheme::bg_surf())
-            .border_b_1()
-            .border_color(CyberpunkTheme::border())
-    }
-
-    fn render_search(&mut self, cx: &mut Context<Self>) -> Div {
-        let mut col = div().flex().flex_col().gap_1().px_4().py_3();
-
-        let input_value = self.input.read(cx).value().to_string();
-        let mut search = div().flex().gap_2().items_center();
-        // 搜索框：焦点 ring 由 gpui-kit 绘制（accent = cyan）
-        search = search.child(div().flex_1().child(Input::new(&self.input)));
-
-        if self.loading {
-            search = search.child(
-                div()
-                    .text_color(CyberpunkTheme::cyan())
-                    .text_xs()
-                    .child("查询中…"),
-            );
-        }
-        col = col.child(search);
-
-        // 历史（输入为空时显示最近条目，点击即查；spec 下拉的简化形态）
-        if input_value.is_empty() && !self.history.is_empty() {
-            let mut chips = div().flex().flex_wrap().gap_1();
-            for (i, h) in self.history.iter().take(10).enumerate() {
-                let text = h.clone();
-                chips = chips.child(
-                    div()
-                        .id(("hist", i))
-                        .cursor_pointer()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .bg(CyberpunkTheme::bg_elev())
-                        .border_1()
-                        .border_color(CyberpunkTheme::border())
-                        .hover(|d| d.border_color(CyberpunkTheme::cyan()))
-                        .text_xs()
-                        .text_color(CyberpunkTheme::dim())
-                        .on_click(cx.listener(move |v, _, _, cx| {
-                            v.dispatch_query(text.clone(), cx);
-                        }))
-                        .child(h.clone()),
-                );
-            }
-            col = col.child(
-                div()
-                    .text_xs()
-                    .text_color(CyberpunkTheme::dim())
-                    .child("最近查询")
-                    .child(chips),
-            );
-        }
-        col
-    }
-
-    fn render_dictionary(&mut self, cx: &mut Context<Self>) -> Div {
-        // 先克隆数据避免 &self.result 与 &mut cx 借用冲突
-        let result = self.result.clone();
-        let wb_keys: Vec<String> = self.wordbook.iter().map(|i| i.word_key.clone()).collect();
-        let wb_clone = self.wordbook.clone();
-
-        let content = match &result {
-            Some(QueryResult::Entry(entry)) => components::render_entry(entry, &wb_keys, cx),
-            Some(QueryResult::Candidates(cands)) => components::render_candidates(cands, cx),
-            Some(QueryResult::NotFound {
-                input,
-                suggestions,
-            }) => components::render_not_found(input, suggestions, cx),
-            None => components::render_placeholder(),
-        };
-
-        div()
-            .flex()
-            .size_full()
-            .overflow_hidden()
-            .child(
-                div()
-                    .id("entry-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .px_4()
-                    .pb_4()
-                    .child(content),
             )
-            .child(components::render_wordbook_panel(&wb_clone, cx))
+            // 顶层：扫描线（盖在内容上，pointer-events none 天然成立）
+            .child(scanlines)
+            .children(toast)
     }
 }

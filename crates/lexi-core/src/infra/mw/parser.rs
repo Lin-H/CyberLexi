@@ -10,7 +10,7 @@
 
 use serde_json::Value;
 
-use crate::domain::types::{MwEntry, Sense};
+use crate::domain::types::{CrossRef, Inflection, MwEntry, MwMeta, RunOn, Sense, SubSense};
 
 /// 解析后的 MW 响应。
 #[derive(Debug, Clone, PartialEq)]
@@ -73,20 +73,82 @@ fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
             }
         }
     }
-    // uros.prs 音频码（spec 指定收集）
+    // hwi.altprs：备用音标（无 sound）
+    let alt_phonetics = hwi["altprs"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| p["mw"].as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    // hwi.ins：屈折变体（if 词形）
+    let inflections = hwi["ins"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| i["if"].as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| Inflection {
+                    display: MwEntry::clean_headword(&s.replace('/', "")),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // uros：派生词条（ure/fl/prs；prs 音频码一并收集）
+    let mut run_ons = Vec::new();
     if let Some(uros) = v["uros"].as_array() {
         for uro in uros {
-            if let Some(prs) = uro["prs"].as_array() {
-                for pr in prs {
-                    if let Some(code) = pr["sound"]["audio"].as_str() {
-                        if !code.is_empty() && !audio_codes.iter().any(|c: &String| c == code) {
-                            audio_codes.push(code.to_string());
-                        }
-                    }
+            let ure = uro["ure"].as_str().unwrap_or_default();
+            if ure.is_empty() {
+                continue;
+            }
+            let pr = uro["prs"].as_array().and_then(|a| a.first());
+            let uro_phonetic = pr
+                .and_then(|p| p["mw"].as_str())
+                .map(str::to_string)
+                .unwrap_or_default();
+            if let Some(code) = pr
+                .and_then(|p| p["sound"]["audio"].as_str())
+                .filter(|c| !c.is_empty())
+            {
+                if !audio_codes.iter().any(|c| c == code) {
+                    audio_codes.push(code.to_string());
                 }
             }
+            run_ons.push(RunOn {
+                ure: MwEntry::clean_headword(ure),
+                fl: uro["fl"].as_str().unwrap_or_default().to_string(),
+                phonetic: uro_phonetic,
+            });
         }
     }
+
+    // cxs：交叉引用
+    let cross_refs = v["cxs"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|cx| {
+                    let refs = cx["cxref"]
+                        .as_array()
+                        .map(|rs| {
+                            rs.iter()
+                                .filter_map(|r| r.as_str())
+                                .map(str::to_string)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    (!refs.is_empty()).then(|| CrossRef {
+                        label: cx["cxl"].as_str().unwrap_or_default().to_string(),
+                        refs,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let pos = v["fl"].as_str().unwrap_or_default().to_string();
     let short_defs = v["shortdef"]
@@ -122,9 +184,31 @@ fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
 
     let date = v["date"].as_str().map(crate::infra::mw::markup::to_plain);
 
-    let stems = v["meta"]["stems"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+    let hom = v["hom"].as_u64().map(|h| h.to_string());
+
+    let meta = v["meta"].as_object().map(|m| MwMeta {
+        id: m.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+        src: m.get("src").and_then(Value::as_str).unwrap_or_default().to_string(),
+        section: m
+            .get("section")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        sort: m
+            .get("sort")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        stems: m
+            .get("stems")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+            .unwrap_or_default(),
+        offensive: m.get("offensive").and_then(Value::as_bool).unwrap_or(false),
+    });
+    let stems = meta
+        .as_ref()
+        .map(|m| m.stems.clone())
         .unwrap_or_default();
 
     // spec 提及 meta.labels，但官方文档 meta 无此字段；entry 级 lbs 是
@@ -145,6 +229,12 @@ fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
         date,
         stems,
         labels,
+        hom,
+        meta,
+        alt_phonetics,
+        inflections,
+        run_ons,
+        cross_refs,
         raw_json: serde_json::to_string(v)?,
     })
 }
@@ -157,12 +247,7 @@ fn walk_sense_elements(elems: &[Value], out: &mut Vec<Sense>) {
         match kind {
             "sense" => {
                 if let Some(body) = pair.get(1) {
-                    push_sense(body, None, out);
-                    // sdsense（§2.10.7）：追加为独立 sense
-                    if let Some(sd) = body.get("sdsense") {
-                        let sd_label = sd["sd"].as_str().unwrap_or_default();
-                        push_sense(sd, Some(sd_label), out);
-                    }
+                    push_sense(body, out);
                 }
             }
             // 截断 sense（无定义文本，§2.10.8）：跳过
@@ -170,7 +255,7 @@ fn walk_sense_elements(elems: &[Value], out: &mut Vec<Sense>) {
             // binding substitute（§2.10.9）：内含一个 sense
             "bs" => {
                 if let Some(inner) = pair.get(1).and_then(|b| b.get("sense")) {
-                    push_sense(inner, None, out);
+                    push_sense(inner, out);
                 }
             }
             // 括号序列（§2.10.10）：递归
@@ -184,51 +269,64 @@ fn walk_sense_elements(elems: &[Value], out: &mut Vec<Sense>) {
     }
 }
 
-/// 从 sense 对象提取 sn/dt（text + vis）。
-fn push_sense(body: &Value, sd_label: Option<&str>, out: &mut Vec<Sense>) {
+/// 从 sense 对象提取 sn/dt（text + vis）；sdsense（§2.10.7）挂为
+/// `subsenses` 子块（UI 以 "↳ label: text" 形式渲染）。
+fn push_sense(body: &Value, out: &mut Vec<Sense>) {
     let sn = body["sn"].as_str().map(str::to_string);
+    let (text, examples) = extract_dt(&body["dt"]);
+    let subsenses: Vec<SubSense> = body
+        .get("sdsense")
+        .map(|sd| {
+            let (sd_text, sd_examples) = extract_dt(&sd["dt"]);
+            SubSense {
+                label: sd["sd"].as_str().unwrap_or_default().to_string(),
+                text: sd_text,
+                examples: sd_examples,
+            }
+        })
+        .into_iter()
+        .filter(|sd| !sd.text.is_empty() || !sd.examples.is_empty())
+        .collect();
+    if !text.is_empty() || !examples.is_empty() || !subsenses.is_empty() {
+        out.push(Sense { sn, text, examples, subsenses });
+    }
+}
+
+/// dt 数组 → (拼接文本, 例句列表)；MW markup 已转纯文本。
+fn extract_dt(dt: &Value) -> (String, Vec<String>) {
     let mut text = String::new();
     let mut examples = Vec::new();
-    if let Some(dt) = body["dt"].as_array() {
-        for part in dt {
-            let Some(pair) = part.as_array() else { continue };
-            match pair.first().and_then(Value::as_str).unwrap_or_default() {
-                "text" => {
-                    if let Some(t) = pair.get(1).and_then(Value::as_str) {
-                        let rendered = crate::infra::mw::markup::to_plain(t);
-                        if !rendered.is_empty() {
-                            if !text.is_empty() {
-                                text.push(' ');
-                            }
-                            text.push_str(&rendered);
+    let Some(parts) = dt.as_array() else { return (text, examples) };
+    for part in parts {
+        let Some(pair) = part.as_array() else { continue };
+        match pair.first().and_then(Value::as_str).unwrap_or_default() {
+            "text" => {
+                if let Some(t) = pair.get(1).and_then(Value::as_str) {
+                    let rendered = crate::infra::mw::markup::to_plain(t);
+                    if !rendered.is_empty() {
+                        if !text.is_empty() {
+                            text.push(' ');
                         }
+                        text.push_str(&rendered);
                     }
                 }
-                "vis" => {
-                    if let Some(vis) = pair.get(1).and_then(Value::as_array) {
-                        for vi in vis {
-                            if let Some(t) = vi["t"].as_str() {
-                                let rendered = crate::infra::mw::markup::to_plain(t);
-                                if !rendered.is_empty() {
-                                    examples.push(rendered);
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
             }
+            "vis" => {
+                if let Some(vis) = pair.get(1).and_then(Value::as_array) {
+                    for vi in vis {
+                        if let Some(t) = vi["t"].as_str() {
+                            let rendered = crate::infra::mw::markup::to_plain(t);
+                            if !rendered.is_empty() {
+                                examples.push(rendered);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
-    // sdsense 的 sd 分隔词（如 "also"/"specifically"）并入文本开头
-    if let Some(label) = sd_label {
-        if !label.is_empty() && !text.is_empty() {
-            text = format!("{label}: {text}");
-        }
-    }
-    if !text.is_empty() || !examples.is_empty() {
-        out.push(Sense { sn, text, examples });
-    }
+    (text, examples)
 }
 
 #[cfg(test)]
@@ -325,24 +423,71 @@ mod tests {
             Some("Late Latin voluminosus, from Latin volumin-, volumen")
         );
         assert_eq!(e.date.as_deref(), Some("1611"));
+        // meta 提取
+        let meta = e.meta.as_ref().expect("meta");
+        assert_eq!(meta.id, "voluminous");
+        assert_eq!(meta.src, "collegiate");
+        assert_eq!(meta.section, "alpha");
+        assert_eq!(meta.sort, "220130400");
+        assert!(!meta.offensive);
+        // uros 派生词
+        assert_eq!(e.run_ons.len(), 2);
+        assert_eq!(e.run_ons[0].ure, "voluminously");
+        assert_eq!(e.run_ons[0].fl, "adverb");
+        assert_eq!(e.run_ons[1].ure, "voluminousness");
         // raw_json 可再解析
         let raw: Value = serde_json::from_str(&e.raw_json).unwrap();
         assert_eq!(raw["meta"]["id"], "voluminous");
     }
 
     #[test]
-    fn senses_include_sdsense_and_examples() {
+    fn senses_attach_sdsense_as_subsense() {
         let resp = parse_body(VOLUMINOUS).unwrap();
         let MwResponse::Entries(entries) = resp else { panic!() };
         let senses = &entries[0].senses;
-        // 1a、also(sdsense)、b、3
-        assert_eq!(senses.len(), 4);
+        // 1a（含 subsense）、b、3 —— sdsense 不再摊平为独立 sense
+        assert_eq!(senses.len(), 3);
         assert_eq!(senses[0].sn.as_deref(), Some("1 a"));
         assert!(senses[0].text.contains("having or marked by great volume"));
         assert_eq!(senses[0].examples, vec!["long voluminous tresses"]);
-        // sdsense：sn 继承？——设计为 None（sd 并入文本）
-        assert!(senses[1].text.starts_with("also: "));
-        assert_eq!(senses[3].sn.as_deref(), Some("3"));
+        let sd = &senses[0].subsenses[0];
+        assert_eq!(sd.label, "also");
+        assert_eq!(sd.text, "full");
+        assert_eq!(senses[2].sn.as_deref(), Some("3"));
+        assert!(senses[0].subsenses.len() == 1);
+    }
+
+    #[test]
+    fn homograph_and_hom_number_extracted() {
+        // 双 homograph（test:1/test:2，文档 §2.2）+ hom 序号 + cxs/ins
+        let body = r#"[
+            {"meta":{"id":"test:1","stems":["test"]},"hom":1,
+             "hwi":{"hw":"test","ins":[{"if":"tests"},{"if":"tested"}],
+                    "prs":[{"mw":"ˈtest","sound":{"audio":"test0001","ref":"c","stat":"1"}}]},
+             "fl":"noun","shortdef":["a"],
+             "cxs":[{"cxl":"synonym of","cxref":["trial","proof"]}],
+             "def":[{"sseq":[[["sense",{"sn":"1","dt":[["text","{bc}a trial"]]}]]]}]},
+            {"meta":{"id":"test:2","stems":["test"]},"hom":2,
+             "hwi":{"hw":"test"},"fl":"verb","shortdef":["b"],
+             "def":[{"sseq":[[["sense",{"sn":"1","dt":[["text","{bc}to try"]]}]]]}]}
+        ]"#;
+        match parse_body(body).unwrap() {
+            MwResponse::Entries(es) => {
+                assert_eq!(es.len(), 2);
+                assert_eq!(es[0].pos, "noun");
+                assert_eq!(es[1].pos, "verb");
+                assert_eq!(es[0].hom.as_deref(), Some("1"));
+                assert_eq!(es[1].hom.as_deref(), Some("2"));
+                assert_eq!(
+                    es[0].inflections.iter().map(|i| i.display.as_str()).collect::<Vec<_>>(),
+                    vec!["tests", "tested"]
+                );
+                assert_eq!(es[0].cross_refs.len(), 1);
+                assert_eq!(es[0].cross_refs[0].label, "synonym of");
+                assert_eq!(es[0].cross_refs[0].refs, vec!["trial", "proof"]);
+            }
+            _ => panic!(),
+        }
     }
 
     #[test]

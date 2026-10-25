@@ -105,6 +105,78 @@ impl QueryOrchestrator {
         }
     }
 
+    /// 单词本卡片摘要（纯离线聚合：cache 提取列 + ECDICT；零网络）。
+    /// 未收录任何数据源的条目也返回（definition 为空，卡片仍可点击查询）。
+    pub async fn wordbook_summaries(
+        &self,
+        items: &[crate::domain::wordbook::WordBookItem],
+        now: i64,
+    ) -> Vec<crate::domain::types::WordSummary> {
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let cached = self.cache.peek(&item.word_key, now).await.ok().flatten();
+            let ecdict = self.ecdict.lookup(&item.word_key).ok().flatten();
+            let mw = cached.map(|c| c.mw);
+            let headword = if !item.headword.is_empty() {
+                item.headword.clone()
+            } else {
+                mw.as_ref()
+                    .map(|m| m.headword.clone())
+                    .or_else(|| ecdict.as_ref().map(|e| e.word.clone()))
+                    .unwrap_or_else(|| item.word_key.clone())
+            };
+            let phonetic = mw
+                .as_ref()
+                .filter(|m| !m.phonetic.is_empty())
+                .map(|m| m.phonetic.clone())
+                .or_else(|| {
+                    ecdict
+                        .as_ref()
+                        .filter(|e| !e.phonetic.is_empty())
+                        .map(|e| e.phonetic.clone())
+                })
+                .unwrap_or_default();
+            let pos = mw
+                .as_ref()
+                .filter(|m| !m.pos.is_empty())
+                .map(|m| m.pos.clone())
+                .or_else(|| {
+                    ecdict
+                        .as_ref()
+                        .filter(|e| !e.pos.is_empty())
+                        .map(|e| e.pos.clone())
+                })
+                .unwrap_or_default();
+            let definition = ecdict
+                .as_ref()
+                .map(|e| {
+                    e.translation_lines()
+                        .first()
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    mw.as_ref()
+                        .and_then(|m| m.short_defs.first().cloned())
+                })
+                .unwrap_or_default();
+            let exam_tags = ecdict
+                .as_ref()
+                .map(crate::domain::types::EcdictRecord::exam_tags)
+                .unwrap_or_default();
+            out.push(crate::domain::types::WordSummary {
+                word_key: item.word_key.clone(),
+                headword,
+                phonetic,
+                pos,
+                definition,
+                exam_tags,
+            });
+        }
+        out
+    }
+
     async fn query_english(&self, nq: &NormalizedQuery, now: i64) -> QueryResult {
         // 1. 缓存探针（命中即零网络）
         if let Ok(Some(hit)) = self.cache.get(&nq.key, now).await {
@@ -264,6 +336,10 @@ fn combine_entries(entries: Vec<MwEntry>) -> MwEntry {
                 first.stems.push(s);
             }
         }
+        first.run_ons.extend(e.run_ons);
+        first.inflections.extend(e.inflections);
+        first.cross_refs.extend(e.cross_refs);
+        first.alt_phonetics.extend(e.alt_phonetics);
         if first.phonetic.is_empty() {
             first.phonetic = e.phonetic;
         }
@@ -275,6 +351,12 @@ fn combine_entries(entries: Vec<MwEntry>) -> MwEntry {
         }
         if first.date.is_none() {
             first.date = e.date;
+        }
+        if first.hom.is_none() {
+            first.hom = e.hom;
+        }
+        if first.meta.is_none() {
+            first.meta = e.meta;
         }
     }
     first
@@ -295,12 +377,18 @@ fn cedict_entry(key: &str, recs: &[crate::domain::types::CedictRecord]) -> Merge
     let senses = glosses
         .iter()
         .enumerate()
-        .map(|(i, g)| Sense { sn: Some((i + 1).to_string()), text: g.clone(), examples: Vec::new() })
+        .map(|(i, g)| Sense {
+            sn: Some((i + 1).to_string()),
+            text: g.clone(),
+            examples: Vec::new(),
+            ..Default::default()
+        })
         .collect();
     MergedEntry {
         headword_display: headword.clone(),
         normalized_key: key.to_string(),
         phonetic: pinyin,
+        ipa: None,
         pos: String::new(),
         short_defs: glosses.iter().take(3).cloned().collect(),
         senses,
@@ -311,6 +399,14 @@ fn cedict_entry(key: &str, recs: &[crate::domain::types::CedictRecord]) -> Merge
         etymology: None,
         date: None,
         sources: vec![SourceTag::Cedict],
+        hom: None,
+        stems: Vec::new(),
+        meta: None,
+        alt_phonetics: Vec::new(),
+        inflections: Vec::new(),
+        run_ons: Vec::new(),
+        cross_refs: Vec::new(),
+        offensive: false,
     }
 }
 

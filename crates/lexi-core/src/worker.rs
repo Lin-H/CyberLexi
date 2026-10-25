@@ -112,12 +112,19 @@ async fn serve(
         .build()?;
 
     // 初始状态广播
+    let _ = event_tx.send(BackendEvent::ConfigSaved(cfg.clone()));
     let _ = event_tx.send(BackendEvent::OfflineMode(!orch.online_enabled().await));
     if let Some((used, limit)) = current_quota(&orch).await {
         let _ = event_tx.send(BackendEvent::Quota { used, limit });
     }
     let _ = event_tx.send(BackendEvent::WordBookChanged(wordbook.list()?));
     let _ = event_tx.send(BackendEvent::HistoryChanged(history.recent()?));
+    push_stats(&history, &event_tx, now_secs());
+    {
+        let ecdict_n = crate::infra::db::EcdictRepo::new(db.clone()).count().unwrap_or(0);
+        let cedict_n = crate::infra::db::CedictRepo::new(db.clone()).count().unwrap_or(0);
+        let _ = event_tx.send(BackendEvent::DictStats { ecdict: ecdict_n, cedict: cedict_n });
+    }
 
     let inflight: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -147,6 +154,7 @@ async fn serve(
                 let http = http.clone();
                 let dir = paths.audio_dir();
                 let etx = event_tx.clone();
+                let speed = orch.config().await.audio.speed;
                 tokio::spawn(async move {
                     match audio::ensure_downloaded(&http, &dir, &code, &ref_).await {
                         Ok(path) => {
@@ -155,10 +163,12 @@ async fn serve(
                                 path: path.clone(),
                             });
                             // 播放放独立阻塞线程（OutputStream 生命周期=播完）
-                            let res = std::thread::spawn(move || audio::play_blocking(&path))
-                                .join()
-                                .map_err(|_| anyhow::anyhow!("audio thread panicked"))
-                                .and_then(|r| r);
+                            let res = std::thread::spawn(move || {
+                                audio::play_blocking(&path, speed)
+                            })
+                            .join()
+                            .map_err(|_| anyhow::anyhow!("audio thread panicked"))
+                            .and_then(|r| r);
                             if let Err(e) = res {
                                 let _ = etx.send(BackendEvent::AudioFailed {
                                     code,
@@ -247,6 +257,50 @@ async fn serve(
                         .map_err(|e| e.to_string()),
                 ));
             }
+            UiCommand::RandomWord => {
+                // ECDICT 高频词随机抽取 → 走完整查询链（含历史记录/统计）
+                let pick = tokio::task::spawn_blocking({
+                    let db = db.clone();
+                    move || crate::infra::db::EcdictRepo::new(db).random_word(20_000)
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                match pick {
+                    Ok(Some(word)) => {
+                        tracing::debug!(word, "random word picked");
+                        let key = normalizer.normalize(&word).key;
+                        let _ = event_tx.send(BackendEvent::QueryStarted(word.clone()));
+                        spawn_query(&inflight, &event_tx, &orch, &history, word, key, false);
+                    }
+                    Ok(None) => {
+                        let _ = event_tx.send(BackendEvent::PackageDone(Err(
+                            "离线词库为空，无法随机抽词".into(),
+                        )));
+                    }
+                    Err(e) => {
+                        let _ = event_tx.send(BackendEvent::PackageDone(Err(e.to_string())));
+                    }
+                }
+            }
+            UiCommand::RequestWordBookDetails => {
+                let items = wordbook.list()?;
+                let summaries = orch.wordbook_summaries(&items, now_secs()).await;
+                let _ = event_tx.send(BackendEvent::WordBookDetails(summaries));
+            }
+            UiCommand::ReimportDicts => {
+                // 抹掉指纹标记触发全量重导（importer 自身会先 clear）
+                if let Err(e) = meta.set("data_version", "force") {
+                    let _ = event_tx.send(BackendEvent::PackageDone(Err(e.to_string())));
+                    continue;
+                }
+                let paths2 = paths.clone();
+                let db2 = db.clone();
+                let meta2 = meta.clone();
+                let etx = event_tx.clone();
+                tokio::spawn(async move {
+                    run_initial_import(&paths2, &db2, &meta2, &etx).await;
+                });
+            }
             UiCommand::Shutdown => {
                 tracing::info!("worker shutdown");
                 break;
@@ -288,6 +342,7 @@ fn spawn_query(
                     result: Box::new(r),
                 });
                 let _ = etx.send(BackendEvent::HistoryChanged(history.recent().unwrap_or_default()));
+                push_stats(&history, &etx, now_secs());
             }
             Err(e) => {
                 tracing::error!(error = %e, "query failed");
@@ -307,6 +362,22 @@ fn spawn_query(
 async fn current_quota(orch: &Arc<QueryOrchestrator>) -> Option<(u32, u32)> {
     let client = orch.mw_client().await?;
     Some(client.quota())
+}
+
+/// 每日查词目标（侧边栏进度条分母；Phase 2 交由学习计划接管）。
+const DAILY_GOAL: u32 = 20;
+
+fn push_stats(history: &HistoryRepo, event_tx: &std::sync::mpsc::Sender<BackendEvent>, now: i64) {
+    match history.stats(now) {
+        Ok((today, streak)) => {
+            let _ = event_tx.send(BackendEvent::StatsUpdated {
+                today_count: today,
+                goal: DAILY_GOAL,
+                streak_days: streak,
+            });
+        }
+        Err(e) => tracing::warn!(error = %e, "stats compute failed"),
+    }
 }
 
 /// 首启导入：数据文件指纹变化时全量重导（进度经事件上报）。
@@ -358,6 +429,10 @@ async fn run_initial_import(
                 ecdict_rows: a,
                 cedict_rows: b,
             });
+            // 重导后刷新设置页词库计数
+            let ecdict_n = crate::infra::db::EcdictRepo::new(db.clone()).count().unwrap_or(0);
+            let cedict_n = crate::infra::db::CedictRepo::new(db.clone()).count().unwrap_or(0);
+            let _ = event_tx.send(BackendEvent::DictStats { ecdict: ecdict_n, cedict: cedict_n });
         }
         (Err(e), _) | (_, Err(e)) => {
             let _ = event_tx.send(BackendEvent::ImportFailed(e.to_string()));

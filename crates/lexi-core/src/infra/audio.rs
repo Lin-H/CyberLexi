@@ -46,13 +46,20 @@ pub async fn ensure_downloaded(
 }
 
 /// 同步播放本地 mp3（阻塞线程直至播完；调用方用后台线程）。
-pub fn play_blocking(path: &Path) -> anyhow::Result<()> {
+/// `speed`：rodio Source::speed 倍速（0.5~2.0，1.0 = 原速）。
+pub fn play_blocking(path: &Path, speed: f32) -> anyhow::Result<()> {
     let (_stream, handle) = rodio::OutputStream::try_default()
         .map_err(|e| anyhow::anyhow!("audio device: {e}"))?;
     let sink = rodio::Sink::try_new(&handle).map_err(|e| anyhow::anyhow!("sink: {e}"))?;
     let file = std::fs::File::open(path)?;
     let decoder = rodio::Decoder::new(std::io::BufReader::new(file))?;
-    sink.append(decoder);
+    let speed = speed.clamp(0.5, 2.0);
+    if (speed - 1.0).abs() < f32::EPSILON {
+        sink.append(decoder);
+    } else {
+        use rodio::Source as _;
+        sink.append(decoder.speed(speed));
+    }
     sink.sleep_until_end();
     Ok(())
 }

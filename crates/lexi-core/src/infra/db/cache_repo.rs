@@ -29,6 +29,9 @@ pub trait CacheRepo: Send + Sync {
     /// TTL 内命中返回条目并递增 hit_count；未命中/过期返回 None（过期行顺带删除）。
     async fn get(&self, key: &str, now: i64) -> anyhow::Result<Option<CachedEntry>>;
 
+    /// 只读查看（不递增 hit_count、不触发过期删除）；用于单词本摘要聚合。
+    async fn peek(&self, key: &str, now: i64) -> anyhow::Result<Option<CachedEntry>>;
+
     /// 写入/覆盖缓存（保留既有 hit_count）。
     async fn put(&self, key: &str, mw: &MwEntry, ttl_days: u32, now: i64) -> anyhow::Result<()>;
 
@@ -57,6 +60,7 @@ impl CacheRepo for SqliteCacheRepo {
                     .query_row(
                         "SELECT raw_json, headword, phonetic, pos, short_defs, senses_json,
                                 audio_codes, etymology, date_text, stems, labels,
+                                hom, meta_json, altprs_json, ins_json, uros_json, cxs_json,
                                 fetched_at, ttl_days, hit_count
                          FROM cache_entry WHERE word_key = ?1",
                         [&key],
@@ -73,9 +77,15 @@ impl CacheRepo for SqliteCacheRepo {
                                 r.get::<_, Option<String>>(8)?,
                                 r.get::<_, Option<String>>(9)?,
                                 r.get::<_, Option<String>>(10)?,
-                                r.get::<_, i64>(11)?,
-                                r.get::<_, i64>(12)?,
-                                r.get::<_, i32>(13)?,
+                                r.get::<_, Option<String>>(11)?,
+                                r.get::<_, Option<String>>(12)?,
+                                r.get::<_, Option<String>>(13)?,
+                                r.get::<_, Option<String>>(14)?,
+                                r.get::<_, Option<String>>(15)?,
+                                r.get::<_, Option<String>>(16)?,
+                                r.get::<_, i64>(17)?,
+                                r.get::<_, i64>(18)?,
+                                r.get::<_, i32>(19)?,
                             ))
                         },
                     )
@@ -83,6 +93,7 @@ impl CacheRepo for SqliteCacheRepo {
 
                 let Some((raw_json, headword, phonetic, pos, short_defs, senses_json,
                           audio_codes, etymology, date_text, stems, labels,
+                          hom, meta_json, altprs_json, ins_json, uros_json, cxs_json,
                           fetched_at, ttl_days, hit_count)) = row else {
                     return Ok(None);
                 };
@@ -110,6 +121,14 @@ impl CacheRepo for SqliteCacheRepo {
                     date: date_text,
                     stems: decode_json_array(&stems.unwrap_or_default()),
                     labels: decode_json_array(&labels.unwrap_or_default()),
+                    hom: hom.filter(|s| !s.is_empty()),
+                    meta: meta_json
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok()),
+                    alt_phonetics: decode_json_array(&altprs_json.unwrap_or_default()),
+                    inflections: decode_json_or_default(&ins_json),
+                    run_ons: decode_json_or_default(&uros_json),
+                    cross_refs: decode_json_or_default(&cxs_json),
                     raw_json,
                 };
                 Ok(Some(CachedEntry {
@@ -117,6 +136,87 @@ impl CacheRepo for SqliteCacheRepo {
                     fetched_at,
                     // 返回递增后的值（UPDATE 已 +1）
                     hit_count: (hit_count.max(0) as u32).saturating_add(1),
+                }))
+            })
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("join: {e}"))?
+    }
+
+    /// 只读命中（TTL 内）：与 [`CacheRepo::get`] 同构但不递增 hit_count。
+    async fn peek(&self, key: &str, now: i64) -> anyhow::Result<Option<CachedEntry>> {
+        let db = self.db.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            db.with_conn(|c| {
+                let row = c
+                    .query_row(
+                        "SELECT raw_json, headword, phonetic, pos, short_defs, senses_json,
+                                audio_codes, etymology, date_text, stems, labels,
+                                hom, meta_json, altprs_json, ins_json, uros_json, cxs_json,
+                                fetched_at, ttl_days, hit_count
+                         FROM cache_entry WHERE word_key = ?1",
+                        [&key],
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, Option<String>>(1)?,
+                                r.get::<_, Option<String>>(2)?,
+                                r.get::<_, Option<String>>(3)?,
+                                r.get::<_, Option<String>>(4)?,
+                                r.get::<_, Option<String>>(5)?,
+                                r.get::<_, Option<String>>(6)?,
+                                r.get::<_, Option<String>>(7)?,
+                                r.get::<_, Option<String>>(8)?,
+                                r.get::<_, Option<String>>(9)?,
+                                r.get::<_, Option<String>>(10)?,
+                                r.get::<_, Option<String>>(11)?,
+                                r.get::<_, Option<String>>(12)?,
+                                r.get::<_, Option<String>>(13)?,
+                                r.get::<_, Option<String>>(14)?,
+                                r.get::<_, Option<String>>(15)?,
+                                r.get::<_, Option<String>>(16)?,
+                                r.get::<_, i64>(17)?,
+                                r.get::<_, i64>(18)?,
+                                r.get::<_, i32>(19)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+
+                let Some((raw_json, headword, phonetic, pos, short_defs, senses_json,
+                          audio_codes, etymology, date_text, stems, labels,
+                          hom, meta_json, altprs_json, ins_json, uros_json, cxs_json,
+                          fetched_at, ttl_days, hit_count)) = row else {
+                    return Ok(None);
+                };
+                if fetched_at + ttl_days * 86_400 < now {
+                    return Ok(None);
+                }
+                let mw = MwEntry {
+                    headword: headword.unwrap_or_default(),
+                    phonetic: phonetic.unwrap_or_default(),
+                    pos: pos.unwrap_or_default(),
+                    short_defs: decode_json_array(&short_defs.unwrap_or_default()),
+                    senses: serde_json::from_str(&senses_json.unwrap_or_else(|| "[]".into()))
+                        .unwrap_or_default(),
+                    audio_codes: decode_json_array(&audio_codes.unwrap_or_default()),
+                    etymology,
+                    date: date_text,
+                    stems: decode_json_array(&stems.unwrap_or_default()),
+                    labels: decode_json_array(&labels.unwrap_or_default()),
+                    hom: hom.filter(|s| !s.is_empty()),
+                    meta: meta_json.as_deref().and_then(|s| serde_json::from_str(s).ok()),
+                    alt_phonetics: decode_json_array(&altprs_json.unwrap_or_default()),
+                    inflections: decode_json_or_default(&ins_json),
+                    run_ons: decode_json_or_default(&uros_json),
+                    cross_refs: decode_json_or_default(&cxs_json),
+                    raw_json,
+                };
+                Ok(Some(CachedEntry {
+                    mw,
+                    fetched_at,
+                    hit_count: hit_count.max(0) as u32,
                 }))
             })
         })
@@ -134,15 +234,19 @@ impl CacheRepo for SqliteCacheRepo {
                     "INSERT INTO cache_entry
                        (word_key, raw_json, headword, phonetic, pos, short_defs, senses_json,
                         audio_codes, etymology, date_text, stems, labels,
+                        hom, meta_json, altprs_json, ins_json, uros_json, cxs_json,
                         fetched_at, hit_count, ttl_days)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,?14)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,0,?20)
                      ON CONFLICT(word_key) DO UPDATE SET
                        raw_json=excluded.raw_json, headword=excluded.headword,
                        phonetic=excluded.phonetic, pos=excluded.pos,
                        short_defs=excluded.short_defs, senses_json=excluded.senses_json,
                        audio_codes=excluded.audio_codes, etymology=excluded.etymology,
                        date_text=excluded.date_text, stems=excluded.stems,
-                       labels=excluded.labels, fetched_at=excluded.fetched_at,
+                       labels=excluded.labels, hom=excluded.hom,
+                       meta_json=excluded.meta_json, altprs_json=excluded.altprs_json,
+                       ins_json=excluded.ins_json, uros_json=excluded.uros_json,
+                       cxs_json=excluded.cxs_json, fetched_at=excluded.fetched_at,
                        ttl_days=excluded.ttl_days",
                     params![
                         key,
@@ -157,6 +261,12 @@ impl CacheRepo for SqliteCacheRepo {
                         mw.date,
                         serde_json::to_string(&mw.stems)?,
                         serde_json::to_string(&mw.labels)?,
+                        mw.hom,
+                        mw.meta.as_ref().map(|m| serde_json::to_string(m)).transpose()?,
+                        serde_json::to_string(&mw.alt_phonetics)?,
+                        serde_json::to_string(&mw.inflections)?,
+                        serde_json::to_string(&mw.run_ons)?,
+                        serde_json::to_string(&mw.cross_refs)?,
                         now,
                         ttl_days,
                     ],
@@ -200,6 +310,12 @@ fn decode_json_array(s: &str) -> Vec<String> {
     serde_json::from_str(s).unwrap_or_default()
 }
 
+fn decode_json_or_default<T: serde::de::DeserializeOwned + Default>(s: &Option<String>) -> T {
+    s.as_deref()
+        .and_then(|json| serde_json::from_str(json).ok())
+        .unwrap_or_default()
+}
+
 /// 从缓存 JSON 还原 Sense 列表（Sense 已 derive Serialize/Deserialize）。
 #[allow(dead_code)]
 fn decode_senses(s: &str) -> Vec<Sense> {
@@ -234,6 +350,7 @@ mod tests {
                 sn: Some("1".into()),
                 text: "a test".into(),
                 examples: vec!["a test entry".into()],
+                ..Default::default()
             }],
             audio_codes: vec!["test0001".into()],
             etymology: None,
@@ -241,6 +358,7 @@ mod tests {
             stems: vec![hw.into()],
             labels: vec![],
             raw_json: "[{\"meta\":{\"id\":\"test\"}}]".into(),
+            ..Default::default()
         }
     }
 
@@ -320,5 +438,83 @@ mod tests {
     async fn missing_key_is_none() {
         let r = repo();
         assert!(r.get("nope", 0).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn rich_fields_roundtrip() {
+        let r = repo();
+        let mut e = entry("voluminous");
+        e.hom = Some("1".into());
+        e.meta = Some(crate::domain::types::MwMeta {
+            id: "voluminous".into(),
+            src: "collegiate".into(),
+            section: "alpha".into(),
+            sort: "220130400".into(),
+            stems: vec!["voluminous".into(), "voluminously".into()],
+            offensive: false,
+        });
+        e.run_ons = vec![crate::domain::types::RunOn {
+            ure: "voluminously".into(),
+            fl: "adverb".into(),
+            phonetic: String::new(),
+        }];
+        e.inflections = vec![crate::domain::types::Inflection {
+            display: "voluminously".into(),
+        }];
+        e.cross_refs = vec![crate::domain::types::CrossRef {
+            label: "synonym of".into(),
+            refs: vec!["ample".into()],
+        }];
+        e.senses[0].subsenses = vec![crate::domain::types::SubSense {
+            label: "also".into(),
+            text: "full".into(),
+            examples: vec![],
+        }];
+        r.put("voluminous", &e, 30, 1000).await.unwrap();
+        let got = r.get("voluminous", 1001).await.unwrap().unwrap();
+        assert_eq!(got.mw.hom.as_deref(), Some("1"));
+        let meta = got.mw.meta.expect("meta");
+        assert_eq!(meta.src, "collegiate");
+        assert_eq!(meta.stems.len(), 2);
+        assert_eq!(got.mw.run_ons.len(), 1);
+        assert_eq!(got.mw.run_ons[0].ure, "voluminously");
+        assert_eq!(got.mw.inflections[0].display, "voluminously");
+        assert_eq!(got.mw.cross_refs[0].refs, vec!["ample"]);
+        assert_eq!(got.mw.senses[0].subsenses[0].label, "also");
+        assert_eq!(got.mw.senses[0].subsenses[0].text, "full");
+    }
+
+    /// 0004 之前的旧行（富化列 NULL）读取回落空值。
+    #[tokio::test]
+    async fn legacy_row_without_rich_columns_parses() {
+        let r = repo();
+        let e = entry("old");
+        r.db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO cache_entry
+                   (word_key, raw_json, headword, phonetic, pos, short_defs, senses_json,
+                    audio_codes, etymology, date_text, stems, labels,
+                    fetched_at, hit_count, ttl_days)
+                 VALUES ('old',?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9,'[]',1000,0,30)",
+                rusqlite::params![
+                    e.raw_json,
+                    e.headword,
+                    e.phonetic,
+                    e.pos,
+                    serde_json::to_string(&e.short_defs)?,
+                    serde_json::to_string(&e.senses)?,
+                    serde_json::to_string(&e.audio_codes)?,
+                    e.date,
+                    serde_json::to_string(&e.stems)?,
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let got = r.get("old", 1001).await.unwrap().unwrap();
+        assert_eq!(got.mw.headword, "old");
+        assert_eq!(got.mw.hom, None);
+        assert!(got.mw.meta.is_none());
+        assert!(got.mw.run_ons.is_empty());
     }
 }

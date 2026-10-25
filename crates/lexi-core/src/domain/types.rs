@@ -51,8 +51,8 @@ impl SourceTag {
     }
 }
 
-/// MW 释义（一条 sense，含例句）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// MW 释义（一条 sense，含例句与细分义）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Sense {
     /// sense number，如 "1 a" / "(2)"
     pub sn: Option<String>,
@@ -60,10 +60,60 @@ pub struct Sense {
     pub text: String,
     /// verbal illustrations 例句（markup 已转纯文本）
     pub examples: Vec<String>,
+    /// 细分义（sdsense）：作为 sense 内子块渲染（"↳ also: ..."）
+    #[serde(default)]
+    pub subsenses: Vec<SubSense>,
+}
+
+/// sdsense 细分义（sd 分隔词 + 定义 + 例句）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SubSense {
+    /// sd 分隔词，如 "also" / "specifically"
+    pub label: String,
+    pub text: String,
+    pub examples: Vec<String>,
+}
+
+/// MW meta 对象（id/sort/src/section/stems/offensive）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MwMeta {
+    pub id: String,
+    pub src: String,
+    pub section: String,
+    pub sort: String,
+    pub stems: Vec<String>,
+    pub offensive: bool,
+}
+
+/// hwi.ins 屈折变体（if 词形）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Inflection {
+    /// 变体词形（'/' 分隔符已清理）
+    pub display: String,
+}
+
+/// uros 派生词条（defined run-on）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RunOn {
+    /// 派生词词形（'*' 分隔符已清理）
+    pub ure: String,
+    /// 词性（如 adverb / noun）
+    pub fl: String,
+    /// uros.prs[0].mw 音标
+    pub phonetic: String,
+}
+
+/// cxs 交叉引用（cxref，如 "also"/"synonym of"）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CrossRef {
+    /// cxl 引用说明
+    pub label: String,
+    /// cxref 目标词列表
+    pub refs: Vec<String>,
 }
 
 /// Merriam-Webster Collegiate 词条（我方使用的子集，完整报文落 `raw_json`）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MwEntry {
     /// hwi.hw 去除音节分隔符 '*' 后的词形
     pub headword: String,
@@ -73,7 +123,7 @@ pub struct MwEntry {
     pub pos: String,
     /// shortdef
     pub short_defs: Vec<String>,
-    /// def[].sseq 展开后的释义序列（sense/bs/pseq/sdsense 均摊平）
+    /// def[].sseq 展开后的释义序列（sense/bs/pseq；sdsense 挂到 subsenses）
     pub senses: Vec<Sense>,
     /// hwi.prs 与 uros.prs 中的 sound.audio 音频码
     pub audio_codes: Vec<String>,
@@ -81,6 +131,24 @@ pub struct MwEntry {
     pub date: Option<String>,
     pub stems: Vec<String>,
     pub labels: Vec<String>,
+    /// hom：同形异义词序号（如 "1"/"2"）
+    #[serde(default)]
+    pub hom: Option<String>,
+    /// meta 对象（id/src/section/sort/stems/offensive）
+    #[serde(default)]
+    pub meta: Option<MwMeta>,
+    /// hwi.altprs 备用音标
+    #[serde(default)]
+    pub alt_phonetics: Vec<String>,
+    /// hwi.ins 屈折变体
+    #[serde(default)]
+    pub inflections: Vec<Inflection>,
+    /// uros 派生词条
+    #[serde(default)]
+    pub run_ons: Vec<RunOn>,
+    /// cxs 交叉引用
+    #[serde(default)]
+    pub cross_refs: Vec<CrossRef>,
     /// MW 完整 JSON 报文（单 entry；数组场景由 parser 分别产出）
     pub raw_json: String,
 }
@@ -178,6 +246,9 @@ pub struct MergedEntry {
     /// 归一化查询键（去重/单词本主键）
     pub normalized_key: String,
     pub phonetic: String,
+    /// IPA 风格音标（来自 ECDICT phonetic；MW 音标在 `phonetic`）
+    #[serde(default)]
+    pub ipa: Option<String>,
     pub pos: String,
     pub short_defs: Vec<String>,
     pub senses: Vec<Sense>,
@@ -192,6 +263,30 @@ pub struct MergedEntry {
     pub date: Option<String>,
     /// 来源标签集合
     pub sources: Vec<SourceTag>,
+    /// 同形异义词序号（MW hom）
+    #[serde(default)]
+    pub hom: Option<String>,
+    /// 词干/词形族（MW meta.stems）
+    #[serde(default)]
+    pub stems: Vec<String>,
+    /// MW meta（src/section/sort/id/offensive）
+    #[serde(default)]
+    pub meta: Option<MwMeta>,
+    /// 备用音标（hwi.altprs）
+    #[serde(default)]
+    pub alt_phonetics: Vec<String>,
+    /// 屈折变体（hwi.ins）
+    #[serde(default)]
+    pub inflections: Vec<Inflection>,
+    /// 派生词条（uros）
+    #[serde(default)]
+    pub run_ons: Vec<RunOn>,
+    /// 交叉引用（cxs）
+    #[serde(default)]
+    pub cross_refs: Vec<CrossRef>,
+    /// 冒犯性标记（meta.offensive）
+    #[serde(default)]
+    pub offensive: bool,
 }
 
 /// 中文链候选条目。
@@ -202,6 +297,20 @@ pub struct Candidate {
     pub pinyin: Option<String>,
     /// 简短英文/中文释义（单行）
     pub gloss: String,
+}
+
+/// 单词本卡片摘要（离线聚合：cache + ECDICT，零网络）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WordSummary {
+    pub word_key: String,
+    pub headword: String,
+    /// IPA/MW 音标（可用者优先）
+    pub phonetic: String,
+    pub pos: String,
+    /// 首行中文释义（缺则 shortdef 首条）
+    pub definition: String,
+    /// 考试标签（ECDICT tag）
+    pub exam_tags: Vec<String>,
 }
 
 /// 查询链路统一出口。

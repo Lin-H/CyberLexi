@@ -1,0 +1,16 @@
+feat: NEONLEX UI 重设计（按 docs/cyberpunk ui.html 设计稿）
+
+UI 全量重写（lexi-ui）：
+- 布局：侧边栏（品牌/三视图导航/学习统计）+ 顶栏（搜索 Ctrl K/配额/随机词/历史弹层）+ 词典/单词本/设置三视图
+- 特效层：46px 网格 + CRT 扫描线 + 氛围光（canvas + inset shadow，设置可关）
+- 词典视图：hero（hom 上标/播放/收藏/双音标/标签/meta 条）、sense 卡片（强调色轮转/sdsense 子块/例句/交叉引用）、词源/屈折/派生/首见、右侧信息栏（shortdef/stems/中文/词频/学习档案）
+- 单词本：四态筛选 + 卡片网格 + 添加单词；设置：外观色板/扫描线/网格、自动发音/语速、MW Key/缓存/重导/数据包
+- 图标：gpui-kit-assets 内嵌 Lucide（AllAssets）；字体 Segoe UI + JetBrains Mono
+
+core 扩展：
+- MwEntry 富化：hom/meta/altprs/ins/uros/cxs/subsenses（parser+merger+cache 0004 迁移）
+- Config：appearance（accent/scanlines/grid）+ audio（auto_play/speed）；WordStatus::next
+- 新命令：RandomWord（ECDICT 高频随机）/RequestWordBookDetails（离线摘要）/ReimportDicts
+- history.stats（今日查词+连续打卡）、ecdict.random_word、audio play speed
+
+115 tests green；实测：migration 0004 应用、GPU 渲染、图标/中文/网格正常

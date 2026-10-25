@@ -158,7 +158,6 @@ fn urlencode_path(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::types::MwEntry;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;

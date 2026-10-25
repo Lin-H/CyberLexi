@@ -44,6 +44,16 @@ impl WordStatus {
             WordStatus::Mastered,
         ]
     }
+
+    /// 流转到下一状态（New→Learning→Familiar→Mastered→New 循环；UI 单击流转用）。
+    pub fn next(&self) -> WordStatus {
+        match self {
+            WordStatus::New => WordStatus::Learning,
+            WordStatus::Learning => WordStatus::Familiar,
+            WordStatus::Familiar => WordStatus::Mastered,
+            WordStatus::Mastered => WordStatus::New,
+        }
+    }
 }
 
 /// 单词本条目。`word_key` 即查询链路的 normalized key，

@@ -18,6 +18,24 @@ impl EcdictRepo {
         self.db.with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM ecdict", [], |r| r.get(0))?))
     }
 
+    /// 随机高频词（frq 排名前 `pool` 内均匀抽取；3~12 字母）。
+    /// 「随机单词」按钮数据源；无可用词返回 None。
+    pub fn random_word(&self, pool: i64) -> anyhow::Result<Option<String>> {
+        self.db.with_conn(|c| {
+            let word: Option<String> = c
+                .query_row(
+                    "SELECT word FROM ecdict
+                     WHERE frq > 0 AND length(word) BETWEEN 3 AND 12
+                     ORDER BY frq ASC
+                     LIMIT 1 OFFSET abs(random()) % ?1",
+                    [pool],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(word)
+        })
+    }
+
     /// 词精确匹配（word 列 = key）。ECDICT word 本身为小写。
     pub fn lookup(&self, word_key: &str) -> anyhow::Result<Option<EcdictRecord>> {
         self.db.with_conn(|c| {
@@ -219,5 +237,18 @@ mod tests {
         r.clear().unwrap();
         assert_eq!(r.count().unwrap(), 0);
         assert!(r.search_translation("甲", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn random_word_picks_from_pool() {
+        let r = repo();
+        assert!(r.random_word(100).unwrap().is_none(), "空库无随机词");
+        for i in 0..10 {
+            r.insert_batch(&[rec(&format!("word{i:02}"), "词", 10 - i)]).unwrap();
+        }
+        for _ in 0..10 {
+            let w = r.random_word(10).unwrap().expect("有词");
+            assert!(w.starts_with("word"));
+        }
     }
 }

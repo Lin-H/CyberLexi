@@ -31,6 +31,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0003_phase2_placeholder.sql",
         include_str!("../../../../../migrations/0003_phase2_placeholder.sql"),
     ),
+    ("0004_cache_rich.sql", include_str!("../../../../../migrations/0004_cache_rich.sql")),
 ];
 
 /// 线程安全的数据库句柄。

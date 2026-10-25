@@ -7,6 +7,67 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+/// 外观偏好（NEONLEX UI）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppearanceCfg {
+    /// 强调色板："cyan" | "magenta" | "violet"
+    #[serde(default = "default_accent")]
+    pub accent: String,
+    /// CRT 扫描线特效
+    #[serde(default = "default_true")]
+    pub scanlines: bool,
+    /// 等距背景网格
+    #[serde(default = "default_true")]
+    pub grid: bool,
+}
+
+impl Default for AppearanceCfg {
+    fn default() -> Self {
+        AppearanceCfg {
+            accent: default_accent(),
+            scanlines: true,
+            grid: true,
+        }
+    }
+}
+
+/// 发音偏好。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioCfg {
+    /// 查询命中后自动播放发音
+    #[serde(default)]
+    pub auto_play: bool,
+    /// 播放语速（0.5 ~ 2.0；rodio Source::speed）
+    #[serde(default = "one")]
+    pub speed: f32,
+    /// 口音偏好（MW 音频源仅提供美音；字段预留给后续 TTS/英音源）
+    #[serde(default = "default_us")]
+    pub accent: String,
+}
+
+impl Default for AudioCfg {
+    fn default() -> Self {
+        AudioCfg {
+            auto_play: false,
+            speed: 1.0,
+            accent: default_us(),
+        }
+    }
+}
+
+fn default_accent() -> String {
+    "cyan".into()
+}
+fn default_true() -> bool {
+    true
+}
+fn one() -> f32 {
+    1.0
+}
+fn default_us() -> String {
+    "us".into()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     /// Merriam-Webster Developer API Key；空 = 离线模式
@@ -18,6 +79,12 @@ pub struct Config {
     /// 缓存行数上限（冷淘汰阈值）
     #[serde(default = "default_cache_max_rows")]
     pub cache_max_rows: u32,
+    /// 外观偏好
+    #[serde(default)]
+    pub appearance: AppearanceCfg,
+    /// 发音偏好
+    #[serde(default)]
+    pub audio: AudioCfg,
 }
 
 fn default_ttl_days() -> u32 {
@@ -33,6 +100,8 @@ impl Default for Config {
             mw_api_key: String::new(),
             cache_ttl_days: default_ttl_days(),
             cache_max_rows: default_cache_max_rows(),
+            appearance: AppearanceCfg::default(),
+            audio: AudioCfg::default(),
         }
     }
 }
@@ -72,6 +141,10 @@ mod tests {
         assert!(!c.online_enabled());
         assert_eq!(c.cache_ttl_days, 30);
         assert_eq!(c.cache_max_rows, 50_000);
+        assert_eq!(c.appearance.accent, "cyan");
+        assert!(c.appearance.scanlines);
+        assert!(!c.audio.auto_play);
+        assert_eq!(c.audio.speed, 1.0);
     }
 
     #[test]
@@ -82,16 +155,28 @@ mod tests {
             mw_api_key: "test-key".into(),
             cache_ttl_days: 7,
             cache_max_rows: 1000,
+            appearance: AppearanceCfg {
+                accent: "violet".into(),
+                scanlines: false,
+                grid: true,
+            },
+            audio: AudioCfg {
+                auto_play: true,
+                speed: 1.25,
+                accent: "us".into(),
+            },
         };
         c.save(&path).unwrap();
         assert_eq!(Config::load(&path), c);
 
-        // 部分字段缺失时取默认
+        // 旧版配置文件（无 appearance/audio 节）回退默认
         std::fs::write(&path, "mw_api_key = \"k\"\n").unwrap();
         let partial = Config::load(&path);
         assert_eq!(partial.mw_api_key, "k");
         assert!(partial.online_enabled());
         assert_eq!(partial.cache_ttl_days, 30);
+        assert_eq!(partial.appearance.accent, "cyan");
+        assert_eq!(partial.audio.speed, 1.0);
     }
 
     #[test]

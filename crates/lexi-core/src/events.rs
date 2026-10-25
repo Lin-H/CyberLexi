@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use crate::domain::types::QueryResult;
+use crate::domain::types::{QueryResult, WordSummary};
 use crate::domain::wordbook::{WordBookItem, WordStatus};
 use crate::infra::config::Config;
 
@@ -25,6 +25,12 @@ pub enum UiCommand {
     OpenDataDir,
     ExportPackage(PathBuf),
     ImportPackage(PathBuf),
+    /// 随机单词（ECDICT 高频词随机抽取 → 走完整查询链）
+    RandomWord,
+    /// 请求单词本卡片摘要（离线聚合）
+    RequestWordBookDetails,
+    /// 强制重新导入离线词库（忽略指纹）
+    ReimportDicts,
     Shutdown,
 }
 
@@ -41,11 +47,16 @@ pub enum BackendEvent {
     ImportProgress { pct: f32, stage: String },
     ImportDone { ecdict_rows: u64, cedict_rows: u64 },
     ImportFailed(String),
+    /// 离线词库行数（启动时广播，设置页展示）
+    DictStats { ecdict: i64, cedict: i64 },
     AudioReady { code: String, path: PathBuf },
     AudioFailed { code: String, reason: String },
     ConfigSaved(Config),
     WordBookChanged(Vec<WordBookItem>),
+    WordBookDetails(Vec<WordSummary>),
     HistoryChanged(Vec<String>),
+    /// 侧边栏统计（今日查词数 / 目标 / 连续打卡天数）
+    StatsUpdated { today_count: u32, goal: u32, streak_days: u32 },
     PackageDone(Result<String, String>),
     /// 后台线程致命错误（UI 显示后可退出）
     Fatal(String),
