@@ -1,0 +1,79 @@
+name: Release Build
+
+# v 开头的 tag（如 v1.0.1）推送时触发：三平台构建并发布到 Release
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      # 一个平台失败不影响其他平台继续
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            pkg: zip
+            artifact: windows-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            pkg: tar
+            artifact: macos-arm64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            pkg: tar
+            artifact: linux-x64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Linux：GPUI/rodio 的系统构建依赖（fontconfig/freetype/xkbcommon/ALSA）
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake clang \
+            libfontconfig1-dev libfreetype6-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libasound2-dev libudev-dev libvulkan-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "cyberlexi-${{ matrix.os }}"
+
+      - name: Build release
+        run: cargo build --release --workspace
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "dist/cyberlexi-${{ github.ref_name }}-${{ matrix.artifact }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/cyberlexi.exe $stage/
+          Copy-Item -Recurse assets $stage/assets
+          Compress-Archive -Path $stage -DestinationPath "dist/cyberlexi-${{ github.ref_name }}-${{ matrix.artifact }}.zip"
+
+      - name: Package (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: |
+          stage="dist/cyberlexi-${{ github.ref_name }}-${{ matrix.artifact }}"
+          mkdir -p "$stage"
+          cp target/release/cyberlexi "$stage/"
+          cp -R assets "$stage/assets"
+          tar -czf "dist/cyberlexi-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C dist "$(basename "$stage")"
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+          generate_release_notes: true
