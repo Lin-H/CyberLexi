@@ -13,7 +13,7 @@
 
 ```powershell
 cargo run -p lexi-ui            # 开发运行（dev 构建已实测：DirectX 11.1 + GPU 渲染）
-cargo test -p lexi-core         # 核心逻辑独立测试（125 个），无需 GPU/窗口
+cargo test -p lexi-core         # 核心逻辑独立测试（126 个），无需 GPU/窗口
 cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用）
 ```
 
@@ -37,6 +37,7 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
 
 ## 运行行为（本机实测）
 
+- 启动：窗口自动居中于主显示器；TTS 人声后台枚举（不阻塞启动）
 - 首次启动：自动导入 `assets/dict` → ECDICT **59,137 条** + CC-CEDICT **125,314 条**（约 1 分钟，顶部进度条；数据指纹记入 meta，二启跳过并打印 `offline dicts up to date`）
 - 可写数据目录：便携优先（exe 旁 `data/`，dev 构建即 `target/debug/data/`），无权限回退 `%LOCALAPPDATA%\com.cyberlexi\`
 - 查询链路（均已在单测覆盖 + db_probe 实测）：英文（缓存→MW→ECDICT 兜底）；中文（CEDICT 精确→拼音前缀→ECDICT 中文 FTS）；候选点击补全详情
@@ -60,6 +61,20 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
 - 音频 URL 规则实现于 `lexi-core/src/infra/mw/audio_url.rs`（含文档三例单测）
 - MW 结果缓存**只刷新、永不清除**：`cache_ttl_days` 是刷新周期（默认 30 天），到期后查询重新拉取 MW 并覆盖同一行（hit_count 保留）；过期行不删除，`sweep` 仅在超过 `cache_max_rows`（默认 50000，几乎不会触发）时冷淘汰。缓存命中时直接重放 `raw_json` 全字段解析（提取列仅作 raw 损坏的兜底，后续新增 MW 字段无需再做列迁移）
 
+## 发布与 CI
+
+- 仓库：<https://github.com/Lin-H/CyberLexi>（主分支 **master**）
+- `.github/workflows/release.yml`：推送 `v` 开头 tag（如 `v1.0.1`）→ Windows x64 / macOS arm64 / Linux x64 三平台矩阵构建 → 二进制 + `assets/` 打包（zip/tar.gz）→ 自动附加到对应 GitHub Release（含自动 release notes）
+- 手动发布：`git tag v0.1.0 && git push origin v0.1.0`
+- Linux 构建需系统依赖（fontconfig/freetype/xkbcommon/ALSA/cmake），清单在 workflow 内；macOS/Linux 尚未人工验收（见「风险与应对」）
+
+## 文档
+
+- [AGENTS.md](AGENTS.md) — 开发协作约定：架构铁律、代码地图、GPUI 能力限制踩坑实录、验证方法
+- [docs/phase1-summary.md](docs/phase1-summary.md) — Phase 1 完成总结：交付清单、关键决策、实测记录、Phase 2 待办
+- [docs/Merriam-Webster.md](docs/Merriam-Webster.md) — MW Collegiate API 字段文档（实现对照基准）
+- [docs/cyberpunk ui.html](docs/cyberpunk%20ui.html) — UI 设计稿（界面实现基准）
+
 ## 风险与应对
 
 | 风险 | 应对 |
@@ -70,6 +85,7 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
 | ECDICT mini 覆盖率不足 | 数据源可替换：用户可放入更大规模 csv（同列名格式）重新导入；完整版生成见 make_mini 工具 |
 | MW 限流响应形态未知 | 文档未给出限流 HTTP 状态码/报文；实现按 403/429 + body 探测并熔断，**待实测确认**（标记于 `mw/mod.rs`） |
 | Windows HiDPI 渲染 | gpui-kit 声称支持；发布前须在 100%/150%/200% 缩放下人工验收 |
+| macOS/Linux 平台 | CI 构建清单按 Zed 常规依赖配置，**未跑通验证**；TTS 仅 Windows 有效（其他平台运行时报错不崩）；首个 tag 触发构建后按报错补依赖 |
 
 ## Phase 1 明确不做
 
