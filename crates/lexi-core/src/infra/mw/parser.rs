@@ -115,7 +115,7 @@ fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
         })
         .unwrap_or_default();
 
-    // uros：派生词条（ure/fl/prs；prs 音频码一并收集）
+    // uros：派生词条（ure/fl/prs；音频码归派生词自身，行内播放）
     let mut run_ons = Vec::new();
     if let Some(uros) = v["uros"].as_array() {
         for uro in uros {
@@ -128,18 +128,16 @@ fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
                 .and_then(|p| p["mw"].as_str())
                 .map(str::to_string)
                 .unwrap_or_default();
-            if let Some(code) = pr
+            let uro_audio = pr
                 .and_then(|p| p["sound"]["audio"].as_str())
                 .filter(|c| !c.is_empty())
-            {
-                if !audio_codes.iter().any(|c| c == code) {
-                    audio_codes.push(code.to_string());
-                }
-            }
+                .unwrap_or_default()
+                .to_string();
             run_ons.push(RunOn {
                 ure: MwEntry::clean_headword(ure),
                 fl: uro["fl"].as_str().unwrap_or_default().to_string(),
                 phonetic: uro_phonetic,
+                audio_code: uro_audio,
             });
         }
     }
@@ -185,6 +183,7 @@ fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
                 for group in sseq {
                     if let Some(elems) = group.as_array() {
                         walk_sense_elements(elems, fl, &mut senses);
+                        collect_dt_audio(elems, &mut audio_codes);
                     }
                 }
             }
@@ -261,9 +260,51 @@ fn parse_entry(v: &Value) -> anyhow::Result<MwEntry> {
     })
 }
 
-/// 展开 sseq 组内元素：sense / sen / bs / pseq（文档 §2.10）。
-fn walk_sense_elements(elems: &[Value], fl: Option<&str>, out: &mut Vec<Sense>) {
+/// 收集 sseq 组内所有 sense/sdsense dt 的 ["audio", code] 元组
+/// （义项内嵌录音，§2.8.2）——作为词头发音变体补充（去重后追加）。
+fn collect_dt_audio(elems: &[Value], out: &mut Vec<String>) {
+    fn dt_audio(dt: &Value, out: &mut Vec<String>) {
+        for part in dt.as_array().into_iter().flatten() {
+            if let Some(pair) = part.as_array() {
+                if pair.first().and_then(Value::as_str) == Some("audio") {
+                    if let Some(code) = pair.get(1).and_then(Value::as_str) {
+                        if !code.is_empty() && !out.iter().any(|c| c == code) {
+                            out.push(code.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
     for elem in elems {
+        let Some(pair) = elem.as_array() else { continue };
+        let kind = pair.first().and_then(Value::as_str).unwrap_or_default();
+        match kind {
+            "sense" => {
+                if let Some(body) = pair.get(1) {
+                    dt_audio(&body["dt"], out);
+                    if let Some(sd) = body.get("sdsense") {
+                        dt_audio(&sd["dt"], out);
+                    }
+                }
+            }
+            "bs" => {
+                if let Some(body) = pair.get(1).and_then(|b| b.get("sense")) {
+                    dt_audio(&body["dt"], out);
+                }
+            }
+            "pseq" => {
+                if let Some(inner) = pair.get(1).and_then(Value::as_array) {
+                    collect_dt_audio(inner, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 展开 sseq 组内元素：sense / sen / bs / pseq（文档 §2.10）。
+fn walk_sense_elements(elems: &[Value], fl: Option<&str>, out: &mut Vec<Sense>) {    for elem in elems {
         let Some(pair) = elem.as_array() else { continue };
         let kind = pair.first().and_then(Value::as_str).unwrap_or_default();
         match kind {
@@ -443,8 +484,8 @@ mod tests {
         assert_eq!(e.pos, "adjective");
         assert_eq!(e.short_defs.len(), 3);
         assert_eq!(e.stems.len(), 4);
-        // 音频码：hwi + uros（去重）
-        assert_eq!(e.audio_codes, vec!["volumi02", "volumi03"]);
+        // 音频码：hwi 词头（uros 派生词的录音归派生词自身，不混入）
+        assert_eq!(e.audio_codes, vec!["volumi02"]);
         // 词源 markup 转纯文本
         assert_eq!(
             e.etymology.as_deref(),
@@ -458,19 +499,37 @@ mod tests {
         assert_eq!(meta.section, "alpha");
         assert_eq!(meta.sort, "220130400");
         assert!(!meta.offensive);
-        // uros 派生词
+        // uros 派生词（第二个自带录音，行内播放；第一个无 prs）
         assert_eq!(e.run_ons.len(), 2);
         assert_eq!(e.run_ons[0].ure, "voluminously");
         assert_eq!(e.run_ons[0].fl, "adverb");
+        assert_eq!(e.run_ons[0].audio_code, "");
         assert_eq!(e.run_ons[1].ure, "voluminousness");
+        assert_eq!(e.run_ons[1].audio_code, "volumi03");
         // raw_json 可再解析
         let raw: Value = serde_json::from_str(&e.raw_json).unwrap();
         assert_eq!(raw["meta"]["id"], "voluminous");
     }
 
+    /// 义项 dt 内嵌录音（§2.8.2）：作为词头发音变体收集（含 sdsense、
+    /// pseq 嵌套），与 hwi 音频去重。
     #[test]
-    fn senses_attach_sdsense_as_subsense() {
-        let resp = parse_body(VOLUMINOUS).unwrap();
+    fn collects_sense_dt_audio_as_variants() {
+        let raw = r#"[{"meta":{"id":"sound"},"hwi":{"hw":"sound","prs":[{"mw":"ˈsaʊnd","sound":{"audio":"sound001","ref":"c"}}]},"fl":"noun","shortdef":["x"],"def":[{"sseq":[
+            [["sense",{"sn":"1","dt":[["text","a noise"],["audio","sound004"]]}]],
+            [["pseq",[["sense",{"sn":"2 a","dt":[["audio","sound002"]]}],["sense",{"sn":"b","dt":[["text","y"],["audio","sound001"]]}]]]],
+            [["bs",{"sense":{"sn":"3","dt":[["audio","sound003"]]}}]]
+        ]}]}]"#;
+        let MwResponse::Entries(entries) = parse_body(raw).unwrap() else { panic!() };
+        let e = &entries[0];
+        assert_eq!(
+            e.audio_codes,
+            vec!["sound001", "sound004", "sound002", "sound003"]
+        );
+    }
+
+    #[test]
+    fn senses_attach_sdsense_as_subsense() {        let resp = parse_body(VOLUMINOUS).unwrap();
         let MwResponse::Entries(entries) = resp else { panic!() };
         let senses = &entries[0].senses;
         // 1a（含 subsense）、b、3 —— sdsense 不再摊平为独立 sense

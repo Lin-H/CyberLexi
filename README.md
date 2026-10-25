@@ -13,7 +13,7 @@
 
 ```powershell
 cargo run -p lexi-ui            # 开发运行（dev 构建已实测：DirectX 11.1 + GPU 渲染）
-cargo test -p lexi-core         # 核心逻辑独立测试（118 个），无需 GPU/窗口
+cargo test -p lexi-core         # 核心逻辑独立测试（124 个），无需 GPU/窗口
 cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用）
 ```
 
@@ -21,7 +21,7 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
 
 - **侧边栏**：品牌区、词典/单词本/设置导航（选中态霓虹描边 + 左缘指示条）、底部统计（今日查词目标 + 连续打卡，来自 history 表 UTC 日聚合）
 - **顶栏**：搜索框（焦点青光圈、`Ctrl K` 聚焦、300ms 防抖 + Enter 立即查）、MW 配额 chip、离线指示、随机单词（ECDICT 高频前 20k 随机）、历史弹层（最近 50 条点击即查）、首启导入进度细条
-- **词典视图**：headword + homograph 上标 + 播放/收藏圆钮、MW/IPA 双音标 + 多人声发音按钮（MW 提供的发音变体，≤3 个）、词性/考试/常用度标签、meta 信息条（SRC/SECTION/SORT/ID）、sense 卡片（强调色轮转、MW sn 原生编号（"1 a"＝顶级大数字+小字母、裸字母＝归属当前 division、"(x)"＝子义项）、**义项层级缩进**（0/1/2 级）、**sense 级词性**（MW def[].fl，同形词名词/动词义项各自标注；ECDICT 离线链解析行首 n./vt. 标注）、例句、sdsense 子块 ↳）、**Phrases · 相关短语**区块（短语词条（如 remain to be seen）独立于义项展示，点击即查）、交叉引用 chips、词源/屈折/派生/首见年代、右侧信息栏（shortdef / stems（可点击）/ 中文释义（全量行）/ 词频档案 / 学习档案）
+- **词典视图**：headword + homograph 上标 + 播放/收藏圆钮、MW/IPA 双音标 + 多人声发音按钮（**≤3 个**：MW 录音变体（词头 + 义项内嵌 dt 录音，青色序号）优先，不足时本地 TTS 人声补足（Windows SAPI，紫罗兰字母徽标；启动时枚举 en-* 声音））、派生词条行内播放自己的录音、词性/考试/常用度标签、meta 信息条（SRC/SECTION/SORT/ID）、sense 卡片（强调色轮转、MW sn 原生编号（"1 a"＝顶级大数字+小字母、裸字母＝归属当前 division、"(x)"＝子义项）、**义项层级缩进**（0/1/2 级）、**sense 级词性**（MW def[].fl，同形词名词/动词义项各自标注；ECDICT 离线链解析行首 n./vt. 标注）、例句、sdsense 子块 ↳）、**Phrases · 相关短语**区块（短语词条（如 remain to be seen）独立于义项展示，点击即查）、交叉引用 chips、词源/屈折/派生/首见年代、右侧信息栏（shortdef / stems（可点击）/ 中文释义（全量行）/ 词频档案 / 学习档案）
 - **单词本视图**：四态筛选（全部/生词/学习中/熟悉/已掌握 + 计数）、卡片网格（左缘强调色、音标、释义、掌握度进度条）、添加单词行、卡片内状态流转/移除
 - **设置视图**：外观（主题色板 cyan/magenta/violet 即改即存、扫描线开关、网格开关）、发音（自动发音、语速 0.75/1.0/1.25×——rodio `Source::speed`）、数据（MW Key、缓存 TTL/上限、词库计数与强制重导、数据目录/导出/导入/配额重置）
 - 特效层：46px 等距网格（canvas 逐行绘制 + 顶部衰减）、CRT 扫描线（3px 周期）、三处氛围光斑（inset box-shadow 模糊近似径向渐变）；均可关闭

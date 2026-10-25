@@ -125,6 +125,18 @@ async fn serve(
         let cedict_n = crate::infra::db::CedictRepo::new(db.clone()).count().unwrap_or(0);
         let _ = event_tx.send(BackendEvent::DictStats { ecdict: ecdict_n, cedict: cedict_n });
     }
+    // TTS 声音枚举（PowerShell 冷启动 ~1s，放 blocking 线程；UI 收到前
+    // 只是少几个 TTS 按钮，不影响主链路）
+    {
+        let etx = event_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let voices = crate::infra::tts::installed_voices();
+            tracing::info!(count = voices.len(), voices = voices.join(","), "tts voices");
+            if !voices.is_empty() {
+                let _ = etx.send(BackendEvent::TtsVoices(voices));
+            }
+        });
+    }
 
     let inflight: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -181,6 +193,24 @@ async fn serve(
                         }
                     }
                 });
+            }
+            UiCommand::PlayTts { voice, text } => {
+                let speed = orch.config().await.audio.speed;
+                // 朗读为 PowerShell 同步进程，放独立阻塞线程
+                let voice_for_err = voice.clone();
+                let res = std::thread::spawn(move || {
+                    crate::infra::tts::speak_blocking(&voice, &text, crate::infra::tts::speed_to_rate(speed))
+                })
+                .join()
+                .map_err(|_| anyhow::anyhow!("tts thread panicked"))
+                .and_then(|r| r);
+                if let Err(e) = res {
+                    tracing::warn!(error = %e, voice = %voice_for_err, "tts speak failed");
+                    let _ = event_tx.send(BackendEvent::AudioFailed {
+                        code: format!("tts:{voice_for_err}"),
+                        reason: e.to_string(),
+                    });
+                }
             }
             UiCommand::AddToWordBook { key, headword } => {
                 let now = now_secs();

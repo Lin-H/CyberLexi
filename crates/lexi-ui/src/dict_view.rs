@@ -50,14 +50,14 @@ fn render_entry(entry: &MergedEntry, view: &mut AppView, cx: &mut Context<AppVie
         .max_w(px(1300.))
         // ── 主列 ──
         .child(
-            div().flex_1().min_w_0().flex().flex_col().child(hero(entry, in_wordbook, cx))
+            div().flex_1().min_w_0().flex().flex_col().child(hero(entry, in_wordbook, &view.tts_voices, cx))
                 .child(body(entry)),
         )
         // ── 右侧信息栏 ──
         .child(aside(entry, wb_item.as_ref()))
 }
 
-fn hero(entry: &MergedEntry, in_wordbook: bool, _cx: &mut Context<AppView>) -> Div {
+fn hero(entry: &MergedEntry, in_wordbook: bool, tts_voices: &[String], _cx: &mut Context<AppView>) -> Div {
     let mut head = div().flex().items_center().flex_wrap().gap(px(16.));
 
     // headword + homograph 上标
@@ -111,13 +111,13 @@ fn hero(entry: &MergedEntry, in_wordbook: bool, _cx: &mut Context<AppView>) -> D
         }));
     }
 
-    // 音标行：MW 音标 + 多人声小圆钮（MW 提供的发音变体，≤3）+ IPA + 备用
+    // 音标行：MW 音标 + 多人声小圆钮（MW 录音变体 + TTS 人声，共 ≤3）+ IPA + 备用
     let mut pr_row = div().flex().items_center().flex_wrap().gap(px(10.)).mt(px(14.));
-    if !entry.phonetic.is_empty() || !entry.audio_codes.is_empty() {
+    if !entry.phonetic.is_empty() || !entry.audio_codes.is_empty() || !tts_voices.is_empty() {
         if !entry.phonetic.is_empty() {
             pr_row = pr_row.child(phonetic_pill("MW", &entry.phonetic, false));
         }
-        pr_row = pr_row.child(audio_variants(entry));
+        pr_row = pr_row.child(audio_variants(entry, tts_voices));
     }
     if let Some(ipa) = &entry.ipa {
         if !ipa.is_empty() && *ipa != entry.phonetic {
@@ -258,14 +258,19 @@ fn phonetic_pill(label: &str, text: &str, dim: bool) -> Div {
     )
 }
 
-/// 发音变体按钮组（MW 提供的多个 sound.audio 人声，最多 3 个）。
-/// 单个时显示喇叭图标；多个时显示序号。
-fn audio_variants(entry: &MergedEntry) -> Div {
-    let codes: Vec<&String> = entry.audio_codes.iter().take(3).collect();
+/// 发音按钮组（最多 3 个）：MW 录音变体优先（青色，多个时显示序号），
+/// 不足 3 个用本地 TTS 人声补足（紫罗兰，人声名首字母）。
+fn audio_variants(entry: &MergedEntry, tts_voices: &[String]) -> Div {
+    let mw: Vec<&String> = entry.audio_codes.iter().take(3).collect();
+    let tts: Vec<&String> = tts_voices
+        .iter()
+        .take(3usize.saturating_sub(mw.len()))
+        .collect();
+    let total = mw.len() + tts.len();
     let mut row = div().flex().items_center().gap(px(6.));
-    for (i, code) in codes.iter().enumerate() {
+    for (i, code) in mw.iter().enumerate() {
         let code = (*code).clone();
-        let multiple = codes.len() > 1;
+        let multiple = total > 1;
         row = row.child(
             div()
                 .id(("audio", i))
@@ -301,6 +306,43 @@ fn audio_variants(entry: &MergedEntry) -> Div {
                         .with_size(px(11.))
                         .into_any_element()
                 }),
+        );
+    }
+    for (i, voice) in tts.iter().enumerate() {
+        let voice = (*voice).clone();
+        let text = entry.headword_display.clone();
+        let badge = lexi_core::infra::tts::voice_badge(&voice);
+        row = row.child(
+            div()
+                .id(("tts", i))
+                .cursor_pointer()
+                .w(px(28.))
+                .h(px(28.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(with_alpha(Neon::violet(), 0.08))
+                .border_1()
+                .border_color(with_alpha(Neon::violet(), 0.3))
+                .text_color(Neon::violet())
+                .hover(|d| {
+                    d.bg(with_alpha(Neon::violet(), 0.2))
+                        .shadow(vec![crate::theme::glow(Neon::violet(), 0.45, 16.)])
+                })
+                .on_click(move |_, _, _| {
+                    crate::send_global(UiCommand::PlayTts {
+                        voice: voice.clone(),
+                        text: text.clone(),
+                    });
+                })
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_family(crate::theme::MONO_FONT)
+                        .child(badge),
+                ),
         );
     }
     row
@@ -466,52 +508,79 @@ fn body(entry: &MergedEntry) -> Div {
         let mut grid = div().flex().flex_col().gap(px(2.));
         for (ui_, uro) in entry.run_ons.iter().enumerate() {
             let ure = uro.ure.clone();
-            grid = grid.child(
+            // 行内小喇叭（派生词自己的 MW 录音）
+            let play = (!uro.audio_code.is_empty()).then(|| {
+                let code = uro.audio_code.clone();
                 div()
-                    .id(("uro", ui_))
+                    .id(("uro-play", ui_))
                     .cursor_pointer()
+                    .w(px(22.))
+                    .h(px(22.))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(12.))
-                    .py(px(9.))
-                    .rounded_md()
-                    .bg(white(0.02))
+                    .justify_center()
+                    .rounded_full()
+                    .bg(with_alpha(Neon::cyan(), 0.08))
                     .border_1()
-                    .border_color(steel(0.08))
-                    .hover(|d| {
-                        d.bg(with_alpha(Neon::cyan(), 0.04))
-                            .border_color(with_alpha(Neon::cyan(), 0.2))
+                    .border_color(with_alpha(Neon::cyan(), 0.25))
+                    .text_color(Neon::cyan())
+                    .hover(|d| d.bg(with_alpha(Neon::cyan(), 0.18)))
+                    .on_click(move |_, _, _| {
+                        crate::send_global(UiCommand::PlayAudio {
+                            code: code.clone(),
+                            ref_: "c".into(),
+                        });
                     })
-                    .on_click({
-                        let ure = ure.clone();
-                        move |_, _, _| {
-                            crate::send_global(UiCommand::Query(ure.clone()));
-                        }
-                    })
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(hex("#cfe6f5"))
-                            .child(uro.ure.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_family(crate::theme::MONO_FONT)
-                            .text_color(Neon::violet())
-                            .child(uro.fl.clone()),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_family(crate::theme::MONO_FONT)
-                            .text_color(hex("#5f7f99"))
-                            .child(uro.phonetic.clone()),
-                    ),
-            );
+                    .child(Icon::new(IconName::Volume2).with_size(px(10.)))
+            });
+            let mut row = div()
+                .id(("uro", ui_))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(12.))
+                .py(px(9.))
+                .rounded_md()
+                .bg(white(0.02))
+                .border_1()
+                .border_color(steel(0.08))
+                .hover(|d| {
+                    d.bg(with_alpha(Neon::cyan(), 0.04))
+                        .border_color(with_alpha(Neon::cyan(), 0.2))
+                })
+                .on_click({
+                    let ure = ure.clone();
+                    move |_, _, _| {
+                        crate::send_global(UiCommand::Query(ure.clone()));
+                    }
+                })
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(hex("#cfe6f5"))
+                        .child(uro.ure.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .font_family(crate::theme::MONO_FONT)
+                        .text_color(Neon::violet())
+                        .child(uro.fl.clone()),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .text_xs()
+                        .font_family(crate::theme::MONO_FONT)
+                        .text_color(hex("#5f7f99"))
+                        .child(uro.phonetic.clone()),
+                );
+            if let Some(p) = play {
+                row = row.child(p);
+            }
+            grid = grid.child(row);
         }
         col = col
             .child(div().mt(px(22.)).child(section_label("Run-ons · 派生词条")))

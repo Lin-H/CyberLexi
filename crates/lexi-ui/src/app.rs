@@ -42,6 +42,8 @@ pub struct AppView {
     pub stats: (u32, u32, u32),
     /// 离线词库行数
     pub dict_counts: (i64, i64),
+    /// 本地 TTS 英语声音（启动枚举；MW 录音不足 3 个时补足发音按钮）
+    pub tts_voices: Vec<String>,
     /// 配置镜像（worker 权威；ConfigSaved 回流刷新）
     pub cfg: Config,
     /// 强调色板（cfg.appearance.accent 派生）
@@ -128,6 +130,7 @@ impl AppView {
             notice: None,
             stats: (0, 20, 0),
             dict_counts: (0, 0),
+            tts_voices: Vec::new(),
             cfg: Config::default(),
             accent: AccentPalette::Cyan,
             book_filter: crate::book_view::BookFilter::All,
@@ -220,6 +223,9 @@ impl AppView {
             }
             BackendEvent::DictStats { ecdict, cedict } => {
                 self.dict_counts = (ecdict, cedict);
+            }
+            BackendEvent::TtsVoices(voices) => {
+                self.tts_voices = voices;
             }
             BackendEvent::AudioReady { .. } => {}
             BackendEvent::AudioFailed { code, reason } => {

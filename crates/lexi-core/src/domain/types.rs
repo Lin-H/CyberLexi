@@ -105,6 +105,10 @@ pub struct RunOn {
     pub fl: String,
     /// uros.prs[0].mw 音标
     pub phonetic: String,
+    /// uros.prs[0].sound.audio —— 派生词自己的录音
+    /// （属于派生词而非词头，不混入 audio_codes 变体）
+    #[serde(default)]
+    pub audio_code: String,
 }
 
 /// cxs 交叉引用（cxref，如 "also"/"synonym of"）。

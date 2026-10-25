@@ -482,6 +482,7 @@ mod tests {
             ure: "voluminously".into(),
             fl: "adverb".into(),
             phonetic: String::new(),
+            audio_code: String::new(),
         }];
         e.inflections = vec![crate::domain::types::Inflection {
             display: "voluminously".into(),

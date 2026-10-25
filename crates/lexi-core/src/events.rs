@@ -17,6 +17,8 @@ pub enum UiCommand {
     QueryDetail(String),
     /// 播放音频（MW audio code + sound.ref）
     PlayAudio { code: String, ref_: String },
+    /// 本地 TTS 朗读（SAPI 声音名 + 文本）
+    PlayTts { voice: String, text: String },
     AddToWordBook { key: String, headword: String },
     RemoveFromWordBook(String),
     SetWordStatus { key: String, status: WordStatus },
@@ -51,6 +53,8 @@ pub enum BackendEvent {
     DictStats { ecdict: i64, cedict: i64 },
     AudioReady { code: String, path: PathBuf },
     AudioFailed { code: String, reason: String },
+    /// 启动时枚举的本地 TTS 英语声音（SAPI；空表=不可用，UI 不补 TTS 按钮）
+    TtsVoices(Vec<String>),
     ConfigSaved(Config),
     WordBookChanged(Vec<WordBookItem>),
     WordBookDetails(Vec<WordSummary>),
