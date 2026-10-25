@@ -9,9 +9,13 @@ use crate::theme::{glow, grad, hex, steel, white, with_alpha, Neon};
 use gpui_kit::component::Sizable;
 
 /// 面板卡片：暗面渐变底 + 1px 描边 + 左上青/右下紫角标（设计稿 .panel）。
+/// flex_col：标题独占一行，内容排在标题下方（gpui div 默认 row 会导致
+/// 标题与首个内容并排）。
 pub fn panel() -> Div {
     div()
         .relative()
+        .flex()
+        .flex_col()
         .p_4()
         .rounded_lg()
         .bg(Neon::bg_surf())
