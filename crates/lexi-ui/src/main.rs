@@ -90,11 +90,23 @@ fn main() -> anyhow::Result<()> {
 
             theme::apply(cx);
 
+            // 窗口居中：按主显示器工作区计算 origin（取不到显示器时
+            // 退回系统默认位置）。GPUI 逻辑坐标即物理像素（本应用未做
+            // 每显示器 DPI 缩放适配），直接用像素尺寸即可。
+            let win_size = size(px(1320.), px(880.));
+            let origin = cx.primary_display().map(|d| {
+                let b = d.bounds();
+                point(
+                    b.origin.x + (b.size.width - win_size.width) / 2.,
+                    b.origin.y + (b.size.height - win_size.height) / 2.,
+                )
+            });
+
             let _window = open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds {
-                        origin: Default::default(),
-                        size: size(px(1320.), px(880.)),
+                        origin: origin.unwrap_or_default(),
+                        size: win_size,
                     })),
                     titlebar: Some(TitlebarOptions {
                         title: Some("CyberLexi — 赛博英语词典".into()),
