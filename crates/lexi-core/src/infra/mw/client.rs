@@ -2,7 +2,8 @@
 //!
 //! 配额：非商用 ≤1000 次/天/Key。本地 meta 表按 UTC 日计数（与 MW 服务端
 //! 重置时刻可能有小时级偏差——**待实测**，README 标注），超限主动熔断到
-//! 离线直至次日（或用户在设置页手动重置）。
+//! 离线直至次日（或用户在设置页手动重置）。重启按当日持久化计数恢复；
+//! 长驻进程跨午夜在下次查询前自动滚动到新一天（roll_day）。
 //!
 //! 限流响应形态（HTTP status / body）官方文档未给出：按 403/429 探测并
 //! 视为熔断信号——**待实测确认**。
@@ -44,9 +45,12 @@ pub struct MwClient {
     http: reqwest::Client,
     key: String,
     meta: std::sync::Arc<MetaRepo>,
-    day: i64,
+    /// 当前配额归属日（UTC 日序号）；每次 lookup 前跨天滚动
+    day: std::sync::atomic::AtomicI64,
     used: std::sync::atomic::AtomicU32,
     limit: u32,
+    /// 时钟（测试注入固定值；生产为系统时间）
+    now_fn: Box<dyn Fn() -> i64 + Send + Sync>,
 }
 
 /// UTC 日序号（自 1970-01-01）；配额按此跨天重置。
@@ -54,9 +58,27 @@ pub fn utc_day(now_secs: i64) -> i64 {
     now_secs.div_euclid(86_400)
 }
 
+/// 系统当前秒级时间戳。
+fn system_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 impl MwClient {
     /// `now_secs` 用于确定配额计数归属日（测试可注入）。
     pub fn new(key: &str, meta: std::sync::Arc<MetaRepo>, now_secs: i64) -> Self {
+        Self::with_now(key, meta, now_secs, Box::new(system_now))
+    }
+
+    /// 测试构造：注入固定时钟。
+    fn with_now(
+        key: &str,
+        meta: std::sync::Arc<MetaRepo>,
+        now_secs: i64,
+        now_fn: Box<dyn Fn() -> i64 + Send + Sync>,
+    ) -> Self {
         let day = utc_day(now_secs);
         // 恢复当日持久化计数
         let (_, used) = meta.quota(&day.to_string()).unwrap_or_default();
@@ -67,9 +89,23 @@ impl MwClient {
                 .expect("reqwest client"),
             key: key.trim().to_string(),
             meta,
-            day,
+            day: std::sync::atomic::AtomicI64::new(day),
             used: std::sync::atomic::AtomicU32::new(used),
             limit: DAILY_LIMIT,
+            now_fn,
+        }
+    }
+
+    /// 跨天滚动（长驻进程跨午夜）：归属日切到今天并把内存计数恢复为
+    /// 今日持久化值（新一天即 0——存储层按日期键自动重置）。
+    /// 熔断状态随滚动自然解除。
+    fn roll_day(&self) {
+        let today = utc_day((self.now_fn)());
+        let prev = self.day.swap(today, std::sync::atomic::Ordering::SeqCst);
+        if prev != today {
+            let (_, used) = self.meta.quota(&today.to_string()).unwrap_or_default();
+            self.used.store(used, std::sync::atomic::Ordering::SeqCst);
+            tracing::info!(from = prev, to = today, "mw quota day rolled over");
         }
     }
 
@@ -84,10 +120,8 @@ impl MwClient {
     fn count_request(&self) -> u32 {
         let next = self.used.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         // 持久化（失败仅日志：计数短暂丢失可接受，宁少勿熔断误伤）
-        if let Err(e) = self
-            .meta
-            .quota_incr(&self.day.to_string())
-        {
+        let day = self.day.load(std::sync::atomic::Ordering::SeqCst);
+        if let Err(e) = self.meta.quota_incr(&day.to_string()) {
             tracing::warn!(error = %e, "persist mw quota failed");
         }
         next
@@ -107,6 +141,7 @@ impl MwClient {
 #[async_trait]
 impl MwHttpClient for MwClient {
     async fn lookup(&self, word: &str) -> Result<MwResponse, MwError> {
+        self.roll_day();
         self.check_quota()?;
         let url = format!("{ENDPOINT}{}?key={}", urlencode_path(word), self.key);
         let resp = self
@@ -217,7 +252,15 @@ mod tests {
         let db = std::sync::Arc::new(crate::infra::db::Db::open(&dir.path().join("t.sqlite")).unwrap());
         let meta = std::sync::Arc::new(MetaRepo::new(db));
         let now = 1_800_000_000i64;
-        let client = MwClient::new("k", meta.clone(), now);
+        // 固定时钟构造（roll_day 以同一时钟为准，避免真实时钟跨日滚动干扰）
+        let clock = std::sync::Arc::new(std::sync::Mutex::new(now));
+        let clock_for_fn = clock.clone();
+        let client = MwClient::with_now(
+            "k",
+            meta.clone(),
+            now,
+            Box::new(move || *clock_for_fn.lock().unwrap()),
+        );
         // 预灌配额到上限
         for _ in 0..DAILY_LIMIT {
             client.count_request();
@@ -249,6 +292,42 @@ mod tests {
             std::sync::Arc::new(crate::infra::db::Db::open(&dir.path().join("t.sqlite")).unwrap()),
         )), now + 86_400);
         assert_eq!(c3.used(), 0);
+    }
+
+    /// 长驻进程跨午夜：不重启也会在下次查询前滚动到新一天，
+    /// 内存计数清零（熔断自然解除）；同日内时钟前进不重置。
+    #[tokio::test]
+    async fn quota_rolls_over_at_midnight_while_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = std::sync::Arc::new(crate::infra::db::Db::open(&dir.path().join("t.sqlite")).unwrap());
+        let meta = std::sync::Arc::new(MetaRepo::new(db));
+        let now = 1_800_000_000i64; // day D
+        let clock = std::sync::Arc::new(std::sync::Mutex::new(now));
+        let clock_for_fn = clock.clone();
+        let client = MwClient::with_now(
+            "k",
+            meta.clone(),
+            now,
+            Box::new(move || *clock_for_fn.lock().unwrap()),
+        );
+        // 当日灌到上限 → 熔断
+        for _ in 0..DAILY_LIMIT {
+            client.count_request();
+        }
+        assert!(client.check_quota().is_err());
+        // 同日时钟前进（小时级）：不重置
+        *clock.lock().unwrap() = now + 3_600;
+        client.roll_day();
+        assert!(client.check_quota().is_err());
+        // 跨午夜（day+1）：滚动后熔断解除、计数归零
+        *clock.lock().unwrap() = now + 86_400 + 60;
+        client.roll_day();
+        assert_eq!(client.used(), 0);
+        assert!(client.check_quota().is_ok());
+        // 新一天的计数持久化在新日期键下（重启恢复一致）
+        client.count_request();
+        let new_day = utc_day(now + 86_400 + 60).to_string();
+        assert_eq!(meta.quota(&new_day).unwrap().1, 1);
     }
 
     #[test]

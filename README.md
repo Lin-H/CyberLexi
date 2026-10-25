@@ -56,7 +56,7 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
 
 - Endpoint：`https://www.dictionaryapi.com/api/v3/references/collegiate/json/{word}?key=KEY`
 - Key 仅存于数据目录 `config.toml`，**绝不硬编码/入库**；未配置时整条在线链跳过（离线模式功能完整）
-- 非商用额度 ≤1000 次/天/Key：本地 meta 表计数（顶栏配额 chip 每次查询后刷新），超限熔断到离线直至次日
+- 非商用额度 ≤1000 次/天/Key：本地 meta 表按 UTC 日计数（顶栏配额 chip 每次查询后刷新），超限熔断到离线直至次日——重启按当日计数恢复，长驻运行跨午夜自动滚动到新一天（与 MW 服务端重置时刻可能有小时级偏差，待实测）
 - 音频 URL 规则实现于 `lexi-core/src/infra/mw/audio_url.rs`（含文档三例单测）
 - MW 结果缓存**只刷新、永不清除**：`cache_ttl_days` 是刷新周期（默认 30 天），到期后查询重新拉取 MW 并覆盖同一行（hit_count 保留）；过期行不删除，`sweep` 仅在超过 `cache_max_rows`（默认 50000，几乎不会触发）时冷淘汰。缓存命中时直接重放 `raw_json` 全字段解析（提取列仅作 raw 损坏的兜底，后续新增 MW 字段无需再做列迁移）
 
