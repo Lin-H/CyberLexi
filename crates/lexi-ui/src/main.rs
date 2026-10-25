@@ -3,6 +3,10 @@
 //! GPUI 主线程零阻塞（硬约束）：所有 IO 在 lexi-core worker 的
 //! tokio 运行时执行，UI 经 UiCommand / BackendEvent 通信。
 
+// 发布版按 GUI 子系统链接：不创建控制台窗口（双击启动闪终端的根因）。
+// debug 保留控制台便于观察输出；panic 经 panic_hook 落日志文件。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod book_view;
 mod dict_view;
@@ -69,6 +73,21 @@ actions!(cyberlexi, [FocusSearch]);
 
 fn main() -> anyhow::Result<()> {
     let paths = AppPaths::resolve()?;
+    // panic 落日志文件（发布版无控制台，stderr 不可见；worker 线程
+    // 稍后初始化文件日志，之前的 panic 会静默丢弃——可接受）
+    std::panic::set_hook(Box::new(|info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".into());
+        tracing::error!(location = loc, "panic: {msg}");
+    }));
     tracing::info!(data_dir = paths.data_dir.display().to_string(), "starting");
 
     let handle = worker::spawn(paths.clone())?;
