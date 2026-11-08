@@ -5,8 +5,10 @@
 //! 上一轮未完成任务）。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use anyhow::Context;
 use tokio::sync::mpsc;
 
 use crate::domain::normalizer::Normalizer;
@@ -18,6 +20,7 @@ use crate::infra::db::{Db, DbHandle, HistoryRepo, MetaRepo, SqliteWordBookStore}
 use crate::infra::importer::{cedict, ecdict, data_fingerprint, mark_imported, needs_import};
 use crate::infra::package;
 use crate::infra::paths::AppPaths;
+use crate::infra::updater;
 use crate::orchestrator::{build_orchestrator, QueryOrchestrator};
 
 pub struct WorkerHandle {
@@ -149,6 +152,14 @@ async fn serve(
     let inflight: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let normalizer = Normalizer::l1();
+
+    // 自动更新：pending = 最近一次检查发现的新版 Release；
+    // prepared = 已下载解包、待拉起的安装入口
+    let pending_update: Arc<Mutex<Option<updater::ReleaseInfo>>> = Arc::new(Mutex::new(None));
+    let prepared_update: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    if cfg.update.auto_check {
+        spawn_update_check(http.clone(), event_tx.clone(), pending_update.clone());
+    }
 
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
@@ -339,6 +350,78 @@ async fn serve(
                     run_initial_import(&paths2, &db2, &meta2, &etx).await;
                 });
             }
+            UiCommand::CheckUpdate => {
+                spawn_update_check(http.clone(), event_tx.clone(), pending_update.clone());
+            }
+            UiCommand::DownloadUpdate => {
+                let rel = pending_update.lock().unwrap().clone();
+                let Some(rel) = rel else {
+                    let _ = event_tx.send(BackendEvent::UpdateFailed(
+                        "没有待安装的更新，请先检查更新".into(),
+                    ));
+                    continue;
+                };
+                let http = http.clone();
+                let etx = event_tx.clone();
+                let dir = paths.data_dir.join("updates");
+                let prepared = prepared_update.clone();
+                tokio::spawn(async move {
+                    let res: anyhow::Result<PathBuf> = async {
+                        let asset = updater::platform_asset(&rel).context(
+                            "当前平台暂无自动更新包，请到发布页手动下载",
+                        )?;
+                        let path = updater::download(
+                            &http,
+                            &asset.browser_download_url,
+                            &asset.name,
+                            asset.size,
+                            &dir,
+                            |pct, downloaded, total| {
+                                let _ = etx.send(BackendEvent::UpdateProgress {
+                                    pct,
+                                    downloaded,
+                                    total,
+                                });
+                            },
+                        )
+                        .await?;
+                        let launch =
+                            tokio::task::spawn_blocking(move || updater::prepare(&path, &dir))
+                                .await
+                                .map_err(|e| anyhow::anyhow!("{e}"))??;
+                        Ok(launch)
+                    }
+                    .await;
+                    match res {
+                        Ok(launch) => {
+                            *prepared.lock().unwrap() = Some(launch);
+                            let _ = etx.send(BackendEvent::UpdateReady);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "update download failed");
+                            let _ = etx.send(BackendEvent::UpdateFailed(e.to_string()));
+                        }
+                    }
+                });
+            }
+            UiCommand::InstallUpdate => {
+                let launch = prepared_update.lock().unwrap().take();
+                match launch {
+                    Some(p) => match updater::apply(&p) {
+                        Ok(()) => {
+                            let _ = event_tx.send(BackendEvent::UpdateInstalling);
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(BackendEvent::UpdateFailed(e.to_string()));
+                        }
+                    },
+                    None => {
+                        let _ = event_tx.send(BackendEvent::UpdateFailed(
+                            "更新尚未就绪，请先下载".into(),
+                        ));
+                    }
+                }
+            }
             UiCommand::Shutdown => {
                 tracing::info!("worker shutdown");
                 break;
@@ -346,6 +429,32 @@ async fn serve(
         }
     }
     Ok(())
+}
+
+/// 检查 GitHub Releases 最新版；发现新版存入 pending 并广播。
+/// 启动自动检查与手动检查共用；是否提示由 UI 侧区分。
+fn spawn_update_check(
+    http: reqwest::Client,
+    etx: std::sync::mpsc::Sender<BackendEvent>,
+    pending: Arc<Mutex<Option<updater::ReleaseInfo>>>,
+) {
+    tokio::spawn(async move {
+        match updater::fetch_latest(&http).await {
+            Ok(rel) => {
+                if updater::is_newer(&rel.tag_name, updater::current_version()) {
+                    let info = updater::update_info(&rel);
+                    *pending.lock().unwrap() = Some(rel);
+                    let _ = etx.send(BackendEvent::UpdateAvailable(info));
+                } else {
+                    let _ = etx.send(BackendEvent::UpdateUpToDate);
+                }
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "update check failed");
+                let _ = etx.send(BackendEvent::UpdateCheckFailed(e.to_string()));
+            }
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]

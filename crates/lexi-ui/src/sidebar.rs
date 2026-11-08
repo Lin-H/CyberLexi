@@ -9,7 +9,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::Sizable;
 use gpui_kit::*;
 
-use crate::app::{AppView, Page};
+use crate::app::{AppView, Page, UpdateUi};
 use crate::theme::{grad, hex, white, with_alpha, Neon};
 use crate::widgets::progress_bar;
 
@@ -27,13 +27,24 @@ pub fn render(view: &AppView, cx: &mut Context<AppView>) -> Div {
         .bg(Neon::bg_surf())
         .border_r_1()
         .border_color(with_alpha(Neon::cyan(), 0.10))
-        .child(brand())
+        .child(brand(view))
         .child(nav(view, accent, cx))
         .child(div().flex_1())
         .child(side_foot(view))
 }
 
-fn brand() -> Div {
+fn brand(view: &AppView) -> Div {
+    let ver = lexi_core::infra::updater::current_version();
+    let has_update = matches!(
+        view.update_ui,
+        UpdateUi::Available | UpdateUi::Downloading | UpdateUi::Ready
+    );
+    let ver_label = if has_update {
+        format!("v{ver} · 有新版本")
+    } else {
+        format!("v{ver} / MW-API")
+    };
+    let ver_color = if has_update { Neon::cyan_light() } else { Neon::faint() };
     div()
         .flex()
         .items_center()
@@ -77,8 +88,8 @@ fn brand() -> Div {
                     div()
                         .text_xs()
                         .font_family(crate::theme::MONO_FONT)
-                        .text_color(Neon::faint())
-                        .child("v0.1.0 / MW-API"),
+                        .text_color(ver_color)
+                        .child(ver_label),
                 ),
         )
 }

@@ -68,6 +68,20 @@ fn default_us() -> String {
     "us".into()
 }
 
+/// 更新偏好。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateCfg {
+    /// 启动时静默检查 GitHub Releases（发现新版才提示；失败不提示）
+    #[serde(default = "default_true")]
+    pub auto_check: bool,
+}
+
+impl Default for UpdateCfg {
+    fn default() -> Self {
+        UpdateCfg { auto_check: true }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     /// Merriam-Webster Developer API Key；空 = 离线模式
@@ -85,6 +99,9 @@ pub struct Config {
     /// 发音偏好
     #[serde(default)]
     pub audio: AudioCfg,
+    /// 更新偏好
+    #[serde(default)]
+    pub update: UpdateCfg,
 }
 
 fn default_ttl_days() -> u32 {
@@ -102,6 +119,7 @@ impl Default for Config {
             cache_max_rows: default_cache_max_rows(),
             appearance: AppearanceCfg::default(),
             audio: AudioCfg::default(),
+            update: UpdateCfg::default(),
         }
     }
 }
@@ -145,6 +163,7 @@ mod tests {
         assert!(c.appearance.scanlines);
         assert!(!c.audio.auto_play);
         assert_eq!(c.audio.speed, 1.0);
+        assert!(c.update.auto_check);
     }
 
     #[test]
@@ -165,6 +184,7 @@ mod tests {
                 speed: 1.25,
                 accent: "us".into(),
             },
+            update: UpdateCfg { auto_check: false },
         };
         c.save(&path).unwrap();
         assert_eq!(Config::load(&path), c);
@@ -177,6 +197,7 @@ mod tests {
         assert_eq!(partial.cache_ttl_days, 30);
         assert_eq!(partial.appearance.accent, "cyan");
         assert_eq!(partial.audio.speed, 1.0);
+        assert!(partial.update.auto_check);
     }
 
     #[test]

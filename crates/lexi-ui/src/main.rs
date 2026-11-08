@@ -22,7 +22,7 @@ use std::sync::{OnceLock, RwLock};
 
 use gpui_kit::*;
 use lexi_core::events::UiCommand;
-use lexi_core::infra::config::{AppearanceCfg, AudioCfg, Config};
+use lexi_core::infra::config::{AppearanceCfg, AudioCfg, Config, UpdateCfg};
 use lexi_core::infra::paths::AppPaths;
 use lexi_core::worker;
 use tokio::sync::mpsc::UnboundedSender;
@@ -65,6 +65,13 @@ pub fn patch_appearance(f: impl FnOnce(&mut AppearanceCfg)) {
 pub fn patch_audio(f: impl FnOnce(&mut AudioCfg)) {
     let mut cfg = cfg_snapshot();
     f(&mut cfg.audio);
+    send_global(UiCommand::SaveConfig(cfg));
+}
+
+/// 读改写更新配置并发送保存。
+pub fn patch_update(f: impl FnOnce(&mut UpdateCfg)) {
+    let mut cfg = cfg_snapshot();
+    f(&mut cfg.update);
     send_global(UiCommand::SaveConfig(cfg));
 }
 

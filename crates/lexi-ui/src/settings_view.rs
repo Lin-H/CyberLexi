@@ -1,19 +1,19 @@
 //! 设置视图：外观（色板/扫描线/网格）、发音（口音/自动播放/语速）、
-//! 数据（MW Key/缓存/词库/数据包）。设计稿 #view-settings + Phase 1
-//! 必备数据管理项。开关即改即存：读全局配置镜像 → 改单字段 →
-//! SaveConfig（worker 落盘并回广播刷新镜像）。
+//! 数据（MW Key/缓存/词库/数据包）、关于与更新（GitHub Releases）。
+//! 设计稿 #view-settings + Phase 1 必备数据管理项。开关即改即存：
+//! 读全局配置镜像 → 改单字段 → SaveConfig（worker 落盘并回广播刷新镜像）。
 
 use gpui_kit::component::input::Input;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::*;
 
-use crate::app::AppView;
+use crate::app::{AppView, UpdateUi};
 use lexi_core::events::UiCommand;
 
 use crate::theme::{grad, hex, white, with_alpha, Neon};
-use crate::widgets::{cycle_select, panel};
+use crate::widgets::{cycle_select, panel, progress_bar};
 
-pub fn render(view: &mut AppView, _cx: &mut Context<AppView>) -> Div {
+pub fn render(view: &mut AppView, cx: &mut Context<AppView>) -> Div {
     let mut wrap = div().flex().flex_col().gap_4().max_w(px(860.));
 
     // ── 外观 ──
@@ -286,6 +286,184 @@ pub fn render(view: &mut AppView, _cx: &mut Context<AppView>) -> Div {
         );
     }
 
+    // ── 关于与更新 ──
+    {
+        let auto_check = view.cfg.update.auto_check;
+        let state = view.update_ui;
+        let info = view.update_info.clone();
+        let (pct, downloaded, total) = view.update_progress;
+        let err = view.update_error.clone();
+
+        let mut g = group(
+            "关于与更新 · ABOUT & UPDATE",
+            "基于 GitHub Releases 检查新版本；下载与安装由你确认触发",
+        )
+        .child(row(
+            "当前版本",
+            "github.com/Lin-H/CyberLexi",
+            div()
+                .px(px(12.))
+                .py(px(7.))
+                .rounded_md()
+                .bg(Neon::bg_input())
+                .border_1()
+                .border_color(Neon::border())
+                .text_xs()
+                .font_family(crate::theme::MONO_FONT)
+                .text_color(Neon::cyan_light())
+                .child(format!("v{}", lexi_core::infra::updater::current_version()))
+                .into_any_element(),
+        ))
+        .child(row(
+            "启动时自动检查",
+            "静默检查新版本；发现新版才提示，检查失败不打扰",
+            Switch::new("set-auto-update")
+                .checked(auto_check)
+                .color(Neon::cyan())
+                .on_click(move |checked, _, _| {
+                    crate::patch_update(|u| u.auto_check = *checked);
+                })
+                .into_any_element(),
+        ));
+
+        let status: Div = match state {
+            UpdateUi::Idle => div().child(action_chip(
+                "set-check-update",
+                "检查更新",
+                cx.listener(|v, _, _, cx| v.check_update(cx)),
+            )),
+            UpdateUi::Checking => div()
+                .text_sm()
+                .text_color(Neon::muted())
+                .child("正在检查新版本…"),
+            UpdateUi::Available => {
+                let mut col = div().flex().flex_col().gap_3();
+                if let Some(info) = &info {
+                    let headline = if info.asset_name.is_empty() {
+                        format!("发现新版本 v{}（当前平台暂无自动更新包）", info.version)
+                    } else {
+                        format!(
+                            "发现新版本 v{} · 更新包 {:.1} MB",
+                            info.version,
+                            info.asset_size as f64 / 1_048_576.0
+                        )
+                    };
+                    col = col.child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(Neon::cyan_light())
+                            .child(headline),
+                    );
+                    if !info.notes.trim().is_empty() {
+                        let notes: String = info.notes.chars().take(2000).collect();
+                        col = col.child(
+                            div()
+                                .id("update-notes")
+                                .max_h(px(160.))
+                                .overflow_y_scroll()
+                                .p(px(10.))
+                                .rounded_md()
+                                .bg(Neon::bg_input())
+                                .border_1()
+                                .border_color(Neon::border())
+                                .text_xs()
+                                .line_height(relative(1.5))
+                                .text_color(Neon::muted())
+                                .child(notes),
+                        );
+                    }
+                    if info.asset_name.is_empty() {
+                        col = col.child(
+                            div()
+                                .text_xs()
+                                .text_color(Neon::sense_hint())
+                                .child(format!("请到发布页手动下载：{}", info.url)),
+                        );
+                    } else {
+                        col = col.child(primary_button(
+                            "set-download-update",
+                            "下载更新",
+                            cx.listener(|v, _, _, cx| v.download_update(cx)),
+                        ));
+                    }
+                }
+                col
+            }
+            UpdateUi::Downloading => {
+                let label = if total > 0 {
+                    format!(
+                        "{:.0}% · {:.1} / {:.1} MB",
+                        pct * 100.0,
+                        downloaded as f64 / 1_048_576.0,
+                        total as f64 / 1_048_576.0
+                    )
+                } else {
+                    format!("已下载 {:.1} MB", downloaded as f64 / 1_048_576.0)
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(Neon::muted())
+                            .child("正在下载更新包…"),
+                    )
+                    .child(progress_bar(pct, relative(1.0)))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family(crate::theme::MONO_FONT)
+                            .text_color(Neon::sense_hint())
+                            .child(label),
+                    )
+            }
+            UpdateUi::Ready => {
+                let hint = if info
+                    .as_ref()
+                    .map(|i| i.asset_name.ends_with("-setup.exe"))
+                    .unwrap_or(false)
+                {
+                    "将运行安装程序覆盖升级（用户数据保留），应用自动退出"
+                } else {
+                    "应用将退出并自动替换文件，随后重新启动（用户数据保留）"
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(Neon::sense_hint())
+                            .child(hint),
+                    )
+                    .child(primary_button(
+                        "set-install-update",
+                        "立即安装并重启",
+                        cx.listener(|v, _, _, cx| v.install_update(cx)),
+                    ))
+            }
+            UpdateUi::Installing => div()
+                .text_sm()
+                .text_color(Neon::muted())
+                .child("正在启动安装程序，应用即将退出…"),
+        };
+        g = g.child(div().flex().flex_col().gap_3().pt(px(12.)).child(status));
+        if let Some(e) = err {
+            g = g.child(
+                div()
+                    .pt(px(8.))
+                    .text_xs()
+                    .text_color(Neon::magenta())
+                    .child(format!("更新出错：{e}")),
+            );
+        }
+        wrap = wrap.child(g);
+    }
+
     wrap
 }
 
@@ -364,6 +542,33 @@ fn action_chip(
         })
         .on_click(on_click)
         .child(label.to_string())
+}
+
+/// 主操作按钮（青色渐变 + 发光）。
+fn primary_button(
+    id: &str,
+    label: &str,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id.to_string())
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .px(px(16.))
+        .py(px(8.))
+        .rounded_md()
+        .bg(grad(90., Neon::cyan(), hex("#7de9ff")))
+        .shadow(vec![crate::theme::glow(Neon::cyan(), 0.45, 24.)])
+        .hover(|d| d.shadow(vec![crate::theme::glow(Neon::cyan(), 0.75, 34.)]))
+        .on_click(on_click)
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(hex("#03121a"))
+                .child(label.to_string()),
+        )
 }
 
 fn speed_display(speed: f32) -> &'static str {

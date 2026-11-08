@@ -10,6 +10,7 @@ use lexi_core::domain::types::{QueryResult, WordSummary};
 use lexi_core::domain::wordbook::WordBookItem;
 use lexi_core::events::{BackendEvent, UiCommand};
 use lexi_core::infra::config::Config;
+use lexi_core::infra::updater::UpdateInfo;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::theme::AccentPalette;
@@ -20,6 +21,17 @@ pub enum Page {
     Dict,
     Book,
     Settings,
+}
+
+/// 自动更新状态机（GitHub Releases）。
+#[derive(Clone, Copy, PartialEq)]
+pub enum UpdateUi {
+    Idle,
+    Checking,
+    Available,
+    Downloading,
+    Ready,
+    Installing,
 }
 
 pub struct AppView {
@@ -60,6 +72,14 @@ pub struct AppView {
     pub book_filter: crate::book_view::BookFilter,
     pub add_word_open: bool,
     pub add_word_input: Entity<InputState>,
+    /// 自动更新状态
+    pub update_ui: UpdateUi,
+    pub update_info: Option<UpdateInfo>,
+    /// 下载进度 (pct, downloaded, total)
+    pub update_progress: (f32, u64, u64),
+    pub update_error: Option<String>,
+    /// 手动检查（失败/已最新仅手动时提示；启动自动检查静默）
+    update_manual: bool,
     // 设置页输入
     pub key_input: Entity<InputState>,
     pub ttl_input: Entity<InputState>,
@@ -148,6 +168,11 @@ impl AppView {
             book_filter: crate::book_view::BookFilter::All,
             add_word_open: false,
             add_word_input,
+            update_ui: UpdateUi::Idle,
+            update_info: None,
+            update_progress: (0.0, 0, 0),
+            update_error: None,
+            update_manual: false,
             key_input,
             ttl_input,
             max_input,
@@ -198,6 +223,30 @@ impl AppView {
     pub fn dispatch_detail(&mut self, word: String, cx: &mut Context<Self>) {
         self.loading = true;
         let _ = self.cmd_tx.send(UiCommand::QueryDetail(word));
+        cx.notify();
+    }
+
+    /// 手动检查更新（结果无论成败都提示）。
+    pub fn check_update(&mut self, cx: &mut Context<Self>) {
+        self.update_manual = true;
+        self.update_ui = UpdateUi::Checking;
+        self.update_error = None;
+        let _ = self.cmd_tx.send(UiCommand::CheckUpdate);
+        cx.notify();
+    }
+
+    pub fn download_update(&mut self, cx: &mut Context<Self>) {
+        self.update_ui = UpdateUi::Downloading;
+        self.update_progress = (0.0, 0, 0);
+        self.update_error = None;
+        let _ = self.cmd_tx.send(UiCommand::DownloadUpdate);
+        cx.notify();
+    }
+
+    /// 拉起安装程序/替换脚本；worker 回 UpdateInstalling 后退出应用。
+    pub fn install_update(&mut self, cx: &mut Context<Self>) {
+        self.update_ui = UpdateUi::Installing;
+        let _ = self.cmd_tx.send(UiCommand::InstallUpdate);
         cx.notify();
     }
 
@@ -303,6 +352,59 @@ impl AppView {
                     Ok(msg) => msg,
                     Err(e) => format!("操作失败：{e}"),
                 });
+            }
+            BackendEvent::UpdateAvailable(info) => {
+                self.update_ui = UpdateUi::Available;
+                self.update_error = None;
+                self.notice = Some(format!(
+                    "发现新版本 v{}，见「设置 → 关于与更新」",
+                    info.version
+                ));
+                self.update_info = Some(info);
+            }
+            BackendEvent::UpdateUpToDate => {
+                if self.update_manual {
+                    self.notice = Some("已是最新版本".into());
+                }
+                self.update_manual = false;
+                if self.update_ui == UpdateUi::Checking {
+                    self.update_ui = UpdateUi::Idle;
+                }
+            }
+            BackendEvent::UpdateCheckFailed(e) => {
+                // 启动自动检查失败静默（离线用户不打扰）
+                if self.update_manual {
+                    self.notice = Some(format!("检查更新失败：{e}"));
+                }
+                self.update_manual = false;
+                if self.update_ui == UpdateUi::Checking {
+                    self.update_ui = UpdateUi::Idle;
+                }
+            }
+            BackendEvent::UpdateProgress {
+                pct,
+                downloaded,
+                total,
+            } => {
+                self.update_ui = UpdateUi::Downloading;
+                self.update_progress = (pct, downloaded, total);
+            }
+            BackendEvent::UpdateReady => {
+                self.update_ui = UpdateUi::Ready;
+                self.notice = Some("更新已就绪，请到「设置 → 关于与更新」安装".into());
+            }
+            BackendEvent::UpdateFailed(e) => {
+                self.update_ui = if self.update_info.is_some() {
+                    UpdateUi::Available
+                } else {
+                    UpdateUi::Idle
+                };
+                self.update_error = Some(e.clone());
+                self.notice = Some(format!("更新失败：{e}"));
+            }
+            BackendEvent::UpdateInstalling => {
+                self.update_ui = UpdateUi::Installing;
+                cx.quit();
             }
             BackendEvent::Fatal(e) => {
                 self.notice = Some(format!("后台错误：{e}"));

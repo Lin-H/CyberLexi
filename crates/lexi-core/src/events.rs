@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use crate::domain::types::{QueryResult, WordSummary};
 use crate::domain::wordbook::{WordBookItem, WordStatus};
 use crate::infra::config::Config;
+use crate::infra::updater::UpdateInfo;
 
 #[derive(Debug)]
 pub enum UiCommand {
@@ -33,6 +34,12 @@ pub enum UiCommand {
     RequestWordBookDetails,
     /// 强制重新导入离线词库（忽略指纹）
     ReimportDicts,
+    /// 检查更新（GitHub Releases latest；启动自动检查静默，手动才提示结果）
+    CheckUpdate,
+    /// 下载待装更新包并解包准备安装
+    DownloadUpdate,
+    /// 运行安装（拉起安装程序/替换脚本）；UI 收到 UpdateInstalling 后退出
+    InstallUpdate,
     Shutdown,
 }
 
@@ -62,6 +69,18 @@ pub enum BackendEvent {
     /// 侧边栏统计（今日查词数 / 目标 / 连续打卡天数）
     StatsUpdated { today_count: u32, goal: u32, streak_days: u32 },
     PackageDone(Result<String, String>),
+    /// 发现新版本（含发布说明与平台包信息）
+    UpdateAvailable(UpdateInfo),
+    /// 检查完成：已是最新
+    UpdateUpToDate,
+    UpdateCheckFailed(String),
+    /// 下载进度（total=0 表示尺寸未知，pct 恒 0）
+    UpdateProgress { pct: f32, downloaded: u64, total: u64 },
+    /// 下载并解包完成，可安装
+    UpdateReady,
+    UpdateFailed(String),
+    /// 安装入口已拉起，UI 应立即退出
+    UpdateInstalling,
     /// 后台线程致命错误（UI 显示后可退出）
     Fatal(String),
 }

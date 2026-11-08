@@ -8,3 +8,4 @@ pub mod mw;
 pub mod package;
 pub mod paths;
 pub mod tts;
+pub mod updater;

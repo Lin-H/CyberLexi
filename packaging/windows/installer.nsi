@@ -1,7 +1,8 @@
 ; CyberLexi Windows installer (NSIS / MUI2).
-; Compiled in CI: makensis /DVERSION=1.0.0 /DVERSION_NUMERIC=1.0.0.0 \
+; Compiled in CI: makensis /INPUTCHARSET UTF8 /DVERSION=1.0.0 /DVERSION_NUMERIC=1.0.0.0 \
 ;                 /DSTAGE=<abs stage dir> /DICON=<abs .ico> /DOUTFILE=<abs setup.exe> \
 ;                 packaging\windows\installer.nsi
+; (Script is UTF-8: the .onInit MessageBox carries Chinese text.)
 ; The stage dir must contain cyberlexi.exe and assets\ (dict + fonts).
 ; Per-user install (no UAC). User data (data\) is NOT removed on uninstall.
 
@@ -65,6 +66,33 @@ VIAddVersionKey "LegalCopyright" "MIT License"
 
 !insertmacro MUI_LANGUAGE "English"
 !insertmacro MUI_LANGUAGE "SimpChinese"
+
+; Auto-update flow: the app launches this installer and then exits. A running
+; exe cannot be opened for write (sharing violation), so probe the file lock
+; and wait up to 20s for the old process to release it before overwriting.
+Function .onInit
+  IfFileExists "$INSTDIR\${PRODUCT_EXE}" 0 done
+  StrCpy $R0 0
+  wait:
+    ClearErrors
+    FileOpen $R1 "$INSTDIR\${PRODUCT_EXE}" a
+    IfErrors still_running
+    FileClose $R1
+    Goto done
+  still_running:
+    IntOp $R0 $R0 + 1
+    IntCmp $R0 40 ask continue continue
+  continue:
+    Sleep 500
+    Goto wait
+  ask:
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "CyberLexi is still running. Please close it, then click Retry.$\n检测到 CyberLexi 仍在运行，请先关闭再点击重试。" IDRETRY reset
+    Quit
+  reset:
+    StrCpy $R0 0
+    Goto wait
+  done:
+FunctionEnd
 
 Section "${PRODUCT_NAME} (required)" SEC_MAIN
   SectionIn RO

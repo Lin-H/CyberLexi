@@ -14,7 +14,7 @@
 
 ```powershell
 cargo run -p lexi-ui            # 开发运行（dev 构建实测可用）
-cargo test -p lexi-core         # 核心逻辑测试（126 个），无需 GPU/窗口
+cargo test -p lexi-core         # 核心逻辑测试（138 个），无需 GPU/窗口
 cargo test --workspace          # 全量
 cargo run -p lexi-core --bin db_probe   # 查询链路探针（调试）
 bash scripts/fetch_assets.sh    # 离线词库资源再生成
@@ -28,6 +28,7 @@ bash scripts/fetch_assets.sh    # 离线词库资源再生成
   - `infra/mw/` — client（配额 UTC 日计数 + 跨午夜 roll_day + 熔断）、parser（MW 文档 §2.1–2.29 全字段）、markup（tokens 转纯文本）、audio_url、**tts.rs（Windows SAPI 经 PowerShell，仅 Windows 有效，其他平台运行时报错但不崩）**
   - `infra/db/` — Db/FTS5、cache_repo（raw_json 全字段重放）、wordbook、history、meta（配额持久化）
   - `infra/audio.rs` — MW mp3 下载缓存 + rodio 播放（`Source::speed` 变速）
+  - `infra/updater.rs` — GitHub Releases 自动更新：latest 检查/semver 比较/平台包选择/流式下载（.part 改名、同尺寸复用）/解包与替换脚本（Win setup 或 robocopy、macOS ditto 整包、Linux cp -a）；版本号 `CYBERLEXI_VERSION` 编译期注入，dev 回退 CARGO_PKG_VERSION
   - `orchestrator.rs` — 查询链编排：英文 缓存→MW→ECDICT；中文 CEDICT 精确→拼音前缀→ECDICT FTS
   - `worker.rs` — 命令循环 + 后台任务 spawn + 事件广播（boot 时 ConfigSaved/DictStats/TtsVoices 等）
   - `events.rs` — UiCommand / BackendEvent 协议（纯类型）
@@ -58,10 +59,11 @@ bash scripts/fetch_assets.sh    # 离线词库资源再生成
 - 配额：`MwClient` 内 UTC 日计数，`roll_day` 在每次 lookup 前跨午夜滚动；403=Key 无效、429=限流熔断（响应形态待实测）
 - 导航栈：`QueryStarted` 且非返回触发时把当前展示词压栈（去重、≤50）；`go_back` 弹栈 + `InputState::set_value` 同步搜索框
 - 缓存回放：`cache_entry.raw_json` 存 combine 前的全词条 JSON 数组，读取时 `parse_cached_entries` + `combine_entries` 还原——**新增 MW 字段无需列迁移**
+- 自动更新：启动按 `cfg.update.auto_check` 静默检查（失败不提示）；`UpdateAvailable` 弹 toast + 侧边栏标记；手动检查成败都提示（UI 侧 `update_manual` 区分）。下载/解包在 worker，`UpdateInstalling` 后 UI `cx.quit()`，安装入口为 detached 子进程（NSIS `.onInit` 等旧进程退出；替换脚本等进程消失后覆盖并重启）
 
 ## 验证方法（实测流程）
 
-1. 逻辑：`cargo test --workspace`（126 项；新增解析字段必须带单测，参考 `parses_all_documented_fields`）
+1. 逻辑：`cargo test --workspace`（138 项；新增解析字段必须带单测，参考 `parses_all_documented_fields`）
 2. GUI 实测：构建 → 后台启动 → PowerShell（SetForegroundWindow + SetCursorPos/mouse_event 点击 + SendKeys 输入，Ctrl+K 聚焦搜索框）→ GetWindowRect 截图人工核对
 3. 数据核对：`sqlite3 target/debug/data/db/lexi.sqlite` 查 cache_entry.raw_json（json_extract 数组元素）验证解析结果
 4. 提交：中文 conventional 风格（`fix:`/`feat:`/`ci:`），提交信息写「问题/根因/修复/实测」四段；作者身份 `CyberLexi <dev@cyberlexi.local>`；确认 `.git-commit-msg.txt` 之类的临时文件不入库
@@ -70,7 +72,8 @@ bash scripts/fetch_assets.sh    # 离线词库资源再生成
 
 - `.github/workflows/release.yml`：推 `v*` tag → 三平台矩阵构建 → 单个 release job 汇总发布（避免并发竞争）。Windows（主，`allow_failure:false`）= 便携 zip + NSIS `*-setup.exe`；macOS（次）= `.app`(Info.plist+icns+ad-hoc 签名) zip；Linux（次）= tar.gz(+.desktop+图标)。次平台 `allow_failure:true`，失败不阻塞 Windows
 - 图标：`packaging/icon/cyberlexi.svg`（矢量源，品牌 C 标）→ `cyberlexi.ico`/`.png` 已入库；`crates/lexi-ui/build.rs` 用 `embed-resource`（已在 lock）把 ico+VERSIONINFO 编进 exe，非 Windows no-op、缺 rc.exe 不致命（`manifest_optional`）；CI 经 `CYBERLEXI_VERSION`(tag 去 v) 覆盖 exe 版本号；macOS icns 由 CI `sips`+`iconutil` 生成
-- 打包模板：`packaging/windows/installer.nsi`（per-user 免 UAC，卸载保留 data/）、`packaging/macos/Info.plist`、`packaging/linux/cyberlexi.desktop`
+- 打包模板：`packaging/windows/installer.nsi`（per-user 免 UAC，卸载保留 data/；`.onInit` 文件锁探测等待旧进程退出以支持自动更新覆盖安装；脚本含中文，makensis 须 `/INPUTCHARSET UTF8`）、`packaging/macos/Info.plist`、`packaging/linux/cyberlexi.desktop`
+- 自动更新：应用内基于 GitHub Releases（见 README「自动更新」）；产物命名后缀即平台选择依据（`-windows-x64-setup.exe`/`-windows-x64.zip`/`-macos-arm64.zip`/`-linux-x64.tar.gz`），**改产物命名须同步 `updater::select_asset`**
 - Linux 需 apt 系统依赖（fontconfig/freetype/xkbcommon/ALSA/cmake），清单在 workflow 内
 - 仓库：`git@github.com:Lin-H/CyberLexi.git`，主分支 **master**
 
@@ -80,3 +83,4 @@ bash scripts/fetch_assets.sh    # 离线词库资源再生成
 - MW 限流响应的真实 HTTP 状态码/报文（当前按 403/429 探测）
 - Windows HiDPI 100%/150%/200% 渲染验收
 - macOS/Linux 平台构建与运行（CI 清单按 Zed 常规依赖配置，未跑通验证）
+- macOS/Linux 自动更新替换脚本（apply.sh）未实测；Windows 全链路已实测（检查→下载→安装拉起→退出）

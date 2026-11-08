@@ -4,7 +4,7 @@ members = ["crates/lexi-core", "crates/lexi-ui"]
 
 [workspace.package]
 edition = "2024"
-version = "0.1.0"
+version = "0.1.3"
 license = "MIT"
 authors = ["CyberLexi"]
 
@@ -23,6 +23,7 @@ sha2 = "0.10"
 async-trait = "0.1"
 toml = "0.8"
 csv = "1"
+semver = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "local-time"] }
 tracing-appender = "0.2"
