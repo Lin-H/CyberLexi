@@ -3,8 +3,9 @@
 //! 可写数据（spec 目录策略）：先尝试 exe 同级 `data/`（便携模式），
 //! 探针写入失败（如 Program Files 无权限）则回退
 //! `dirs::data_local_dir()/com.cyberlexi/`。
-//! 只读资源：exe 同级 `assets/`；dev（cargo run）下 exe 位于
-//! `target/…`，回退编译期 `CARGO_MANIFEST_DIR/../../assets` 与 cwd。
+//! 只读资源：exe 同级 `assets/`（macOS .app bundle 为 `Contents/Resources/assets`）；
+//! dev（cargo run）下 exe 位于 `target/…`，回退编译期
+//! `CARGO_MANIFEST_DIR/../../assets` 与 cwd。
 
 use std::path::{Path, PathBuf};
 
@@ -88,6 +89,8 @@ fn locate_assets(exe_dir: Option<&Path>) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(exe) = exe_dir {
         candidates.push(exe.join("assets"));
+        // macOS .app bundle: exe in Contents/MacOS, data in Contents/Resources
+        candidates.push(exe.join("../Resources/assets"));
     }
     // dev（cargo run）：lexi-core 的 manifest 是 crates/lexi-core
     if let Some(manifest) = option_env!("CARGO_MANIFEST_DIR") {
@@ -110,6 +113,19 @@ mod tests {
         let dir = tmp.path().join("data");
         assert!(dir_is_writable(&dir));
         assert!(dir.join(".write_probe").starts_with(&dir));
+    }
+
+    #[test]
+    fn macos_bundle_resources_resolve() {
+        let tmp = tempfile::tempdir().unwrap();
+        let contents = tmp.path().join("Contents");
+        let macos = contents.join("MacOS");
+        let res_assets = contents.join("Resources").join("assets");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::create_dir_all(res_assets.join("dict")).unwrap();
+        std::fs::create_dir_all(res_assets.join("fonts")).unwrap();
+        let found = locate_assets(Some(&macos)).unwrap();
+        assert_eq!(found, res_assets.canonicalize().unwrap());
     }
 
     #[test]

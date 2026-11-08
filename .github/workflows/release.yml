@@ -117,7 +117,7 @@ jobs:
           APP="dist/CyberLexi.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp target/release/cyberlexi "$APP/Contents/MacOS/"
-          cp -R assets "$APP/Contents/MacOS/assets"
+          cp -R assets "$APP/Contents/Resources/assets"
           cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION_NUMERIC" "$APP/Contents/Info.plist"
@@ -135,10 +135,10 @@ jobs:
           iconutil -c icns "$ISET" -o "$APP/Contents/Resources/cyberlexi.icns"
 
           chmod +x "$APP/Contents/MacOS/cyberlexi"
-          # arm64 macOS refuses unsigned executables; ad-hoc sign the binary so
-          # it launches. (Bundle-level signing is skipped: assets live under
-          # MacOS/ next to the exe, which codesign treats as code territory.)
-          codesign --force --sign - "$APP/Contents/MacOS/cyberlexi"
+          # arm64 macOS refuses unsigned executables. Data (assets/icns) lives in
+          # Resources/ where codesign seals it as resources; keeping data under
+          # MacOS/ makes codesign treat it as unsigned nested code and fail.
+          codesign --force --sign - "$APP"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/cyberlexi-$VERSION-macos-arm64.zip"
 
       # ---------------- Linux: portable tar.gz + .desktop ------------------

@@ -3,7 +3,7 @@
 <!--
   CyberLexi macOS .app bundle metadata. CI assembles:
     CyberLexi.app/Contents/MacOS/cyberlexi        (binary)
-    CyberLexi.app/Contents/MacOS/assets/          (dict + fonts, next to exe)
+    CyberLexi.app/Contents/Resources/assets/      (dict + fonts; data, not code)
     CyberLexi.app/Contents/Resources/cyberlexi.icns
   and sets the two version keys from the release tag via PlistBuddy.
 -->
