@@ -3643,6 +3643,7 @@ name = "lexi-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "embed-resource",
  "gpui-kit",
  "lexi-core",
  "serde_json",

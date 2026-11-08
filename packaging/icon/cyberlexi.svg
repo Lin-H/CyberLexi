@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CyberLexi app icon — master vector source.
+  Faithful to the in-app sidebar brand (crates/lexi-ui/src/sidebar.rs::brand):
+  rounded square, 135deg cyan(#00eaff) -> violet(#a855f7) gradient, bold black "C".
+  Render: magick -background none cyberlexi.svg cyberlexi.png  (1024x1024)
+  The "C" is drawn as a geometric path (no font dependency) so it rasterizes
+  identically everywhere and stays crisp down to 16px.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- brand gradient: top-left cyan -> bottom-right violet (CSS 135deg) -->
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00eaff"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+    <!-- neon bloom behind the tile (radial, no filter needed) -->
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.30" stop-color="#00eaff" stop-opacity="0.55"/>
+      <stop offset="0.62" stop-color="#7c6cff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#a855f7" stop-opacity="0"/>
+    </radialGradient>
+    <!-- glass sheen from the top-left -->
+    <radialGradient id="sheen" cx="0.30" cy="0.20" r="0.85">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.34"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="tileClip">
+      <rect x="112" y="112" width="800" height="800" rx="200" ry="200"/>
+    </clipPath>
+  </defs>
+
+  <!-- ambient neon glow -->
+  <circle cx="512" cy="512" r="510" fill="url(#glow)"/>
+
+  <!-- gradient tile -->
+  <rect x="112" y="112" width="800" height="800" rx="200" ry="200" fill="url(#tile)"/>
+
+  <!-- sheen + faint inner grid, clipped to the tile -->
+  <g clip-path="url(#tileClip)">
+    <rect x="112" y="112" width="800" height="800" fill="url(#sheen)"/>
+    <g stroke="#ffffff" stroke-opacity="0.05" stroke-width="2">
+      <path d="M112 312 H912 M112 512 H912 M112 712 H912"/>
+      <path d="M312 112 V912 M512 112 V912 M712 112 V912"/>
+    </g>
+  </g>
+
+  <!-- glass edge -->
+  <rect x="113.5" y="113.5" width="797" height="797" rx="198.5" ry="198.5"
+        fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="3"/>
+
+  <!-- bold geometric "C": annulus (Ro=224, Ri=128) opening 80deg on the right.
+       Shifted +12px for optical centering (the opening removes right-side mass). -->
+  <path transform="translate(12,0)" fill="#03121a"
+        d="M 683.59 655.99
+           A 224 224 0 1 1 683.59 368.02
+           L 610.05 429.72
+           A 128 128 0 1 0 610.05 594.28
+           Z"/>
+</svg>

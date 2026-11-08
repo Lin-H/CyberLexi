@@ -64,8 +64,14 @@ cargo run -p lexi-core --bin db_probe   # 词库/查询链路探针（调试用�
 ## 发布与 CI
 
 - 仓库：<https://github.com/Lin-H/CyberLexi>（主分支 **master**）
-- `.github/workflows/release.yml`：推送 `v` 开头 tag（如 `v1.0.1`）→ Windows x64 / macOS arm64 / Linux x64 三平台矩阵构建 → 二进制 + `assets/` 打包（zip/tar.gz）→ 自动附加到对应 GitHub Release（含自动 release notes）
-- 手动发布：`git tag v0.1.0 && git push origin v0.1.0`
+- `.github/workflows/release.yml`：推送 `v` 开头 tag（如 `v1.0.0`）→ 三平台矩阵构建 → 由单个 release job 汇总发布到 GitHub Release（含自动 release notes，避免多 job 并发竞争）
+  - **Windows（主）**：便携 zip（解压即用）+ NSIS 安装程序 `*-setup.exe`（per-user 免 UAC；卸载保留用户 `data/`）
+  - **macOS（次）**：`CyberLexi.app`（Info.plist + `.icns`，ad-hoc 签名以通过 arm64 启动校验）打包为 zip
+  - **Linux（次）**：tar.gz（二进制 + `assets/` + `.desktop` + 图标）
+  - macOS/Linux 为 best-effort（matrix `allow_failure`），其构建失败不阻塞 Windows 发布
+- 应用图标：`packaging/icon/cyberlexi.svg` 为矢量源（沿用侧边栏品牌 C 标：青→紫渐变圆角方块 + 黑色 C）；派生 `cyberlexi.ico`（多尺寸）经 `crates/lexi-ui/build.rs` + `embed-resource` 编译进 Windows exe（非 Windows 目标自动 no-op）；macOS `.icns` 在 CI 由 `sips` + `iconutil` 从主 PNG 生成
+- 打包脚本/模板：`packaging/windows/installer.nsi`、`packaging/macos/Info.plist`、`packaging/linux/cyberlexi.desktop`
+- 手动发布：`git tag v1.0.0 && git push origin v1.0.0`
 - Linux 构建需系统依赖（fontconfig/freetype/xkbcommon/ALSA/cmake），清单在 workflow 内；macOS/Linux 尚未人工验收（见「风险与应对」）
 
 ## 文档

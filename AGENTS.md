@@ -68,7 +68,9 @@ bash scripts/fetch_assets.sh    # 离线词库资源再生成
 
 ## CI / 发布
 
-- `.github/workflows/release.yml`：推 `v*` tag → Windows x64 / macOS arm64 / Linux x64 矩阵构建 → 二进制 + assets/ 打包 → 附加到 GitHub Release
+- `.github/workflows/release.yml`：推 `v*` tag → 三平台矩阵构建 → 单个 release job 汇总发布（避免并发竞争）。Windows（主，`allow_failure:false`）= 便携 zip + NSIS `*-setup.exe`；macOS（次）= `.app`(Info.plist+icns+ad-hoc 签名) zip；Linux（次）= tar.gz(+.desktop+图标)。次平台 `allow_failure:true`，失败不阻塞 Windows
+- 图标：`packaging/icon/cyberlexi.svg`（矢量源，品牌 C 标）→ `cyberlexi.ico`/`.png` 已入库；`crates/lexi-ui/build.rs` 用 `embed-resource`（已在 lock）把 ico+VERSIONINFO 编进 exe，非 Windows no-op、缺 rc.exe 不致命（`manifest_optional`）；CI 经 `CYBERLEXI_VERSION`(tag 去 v) 覆盖 exe 版本号；macOS icns 由 CI `sips`+`iconutil` 生成
+- 打包模板：`packaging/windows/installer.nsi`（per-user 免 UAC，卸载保留 data/）、`packaging/macos/Info.plist`、`packaging/linux/cyberlexi.desktop`
 - Linux 需 apt 系统依赖（fontconfig/freetype/xkbcommon/ALSA/cmake），清单在 workflow 内
 - 仓库：`git@github.com:Lin-H/CyberLexi.git`，主分支 **master**
 

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=CyberLexi
+Name[zh_CN]=赛博英语词典
+GenericName=English-Chinese Dictionary
+GenericName[zh_CN]=英汉词典
+Comment=Cyberpunk English-Chinese dictionary with offline lookup
+Comment[zh_CN]=赛博朋克英汉词典，支持离线查询
+Exec=cyberlexi
+Icon=cyberlexi
+Terminal=false
+Categories=Education;Dictionary;Office;
+Keywords=dictionary;english;chinese;word;词典;单词;
+StartupWMClass=cyberlexi

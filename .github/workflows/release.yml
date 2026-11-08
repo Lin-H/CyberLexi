@@ -1,6 +1,9 @@
 name: Release Build
 
-# v 开头的 tag（如 v1.0.1）推送时触发：三平台构建并发布到 Release
+# Push a v* tag (e.g. v1.0.0) -> production packages for three platforms,
+# published to a single GitHub Release. Windows is the primary target;
+# macOS / Linux are best-effort (allow_failure) so a secondary-platform
+# breakage never blocks the Windows release.
 on:
   push:
     tags:
@@ -9,31 +12,34 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
+    name: build (${{ matrix.artifact }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.allow_failure }}
     strategy:
-      # 一个平台失败不影响其他平台继续
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            pkg: zip
             artifact: windows-x64
+            allow_failure: false
           - os: macos-latest
             target: aarch64-apple-darwin
-            pkg: tar
             artifact: macos-arm64
+            allow_failure: true
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            pkg: tar
             artifact: linux-x64
+            allow_failure: true
 
-    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      # Linux：GPUI/rodio 的系统构建依赖（fontconfig/freetype/xkbcommon/ALSA）
       - name: Install Linux system deps
         if: runner.os == 'Linux'
         run: |
@@ -44,36 +50,146 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev \
             libasound2-dev libudev-dev libvulkan-dev
 
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: "cyberlexi-${{ matrix.os }}"
+          prefix-key: cyberlexi-${{ matrix.artifact }}
 
-      - name: Build release
-        run: cargo build --release --workspace
+      # Put rc.exe / link.exe on PATH so build.rs (embed-resource) can compile
+      # the icon + version resource into cyberlexi.exe.
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
 
+      - name: Derive version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          core="${VERSION%%-*}"; core="${core%%+*}"
+          IFS='.' read -r p1 p2 p3 p4 <<<"$core"
+          clean() { printf '%s' "${1:-0}" | tr -cd '0-9'; }
+          n1="$(clean "$p1")"; n2="$(clean "$p2")"; n3="$(clean "$p3")"; n4="$(clean "$p4")"
+          VERSION_NUMERIC="${n1:-0}.${n2:-0}.${n3:-0}.${n4:-0}"
+          {
+            echo "VERSION=$VERSION"
+            echo "VERSION_NUMERIC=$VERSION_NUMERIC"
+          } >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION VERSION_NUMERIC=$VERSION_NUMERIC"
+
+      - name: Build release binary
+        env:
+          CYBERLEXI_VERSION: ${{ env.VERSION }}
+        run: cargo build --release --locked -p lexi-ui --bin cyberlexi
+
+      # ---------------- Windows: portable zip + NSIS installer -------------
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $stage = "dist/cyberlexi-${{ github.ref_name }}-${{ matrix.artifact }}"
+          $ErrorActionPreference = "Stop"
+          $stage = "dist/cyberlexi-$env:VERSION-windows-x64"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item target/release/cyberlexi.exe $stage/
           Copy-Item -Recurse assets $stage/assets
-          Compress-Archive -Path $stage -DestinationPath "dist/cyberlexi-${{ github.ref_name }}-${{ matrix.artifact }}.zip"
+          Compress-Archive -Path $stage -DestinationPath "dist/cyberlexi-$env:VERSION-windows-x64.zip"
 
-      - name: Package (macOS / Linux)
-        if: runner.os != 'Windows'
+          # NSIS ships on GitHub Windows runners; fall back to choco if absent.
+          $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) {
+            choco install nsis -y --no-progress
+            $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
+          }
+          $stageAbs = (Resolve-Path $stage).Path
+          $icoAbs = (Resolve-Path packaging/icon/cyberlexi.ico).Path
+          $outAbs = Join-Path (Resolve-Path dist).Path "cyberlexi-$env:VERSION-windows-x64-setup.exe"
+          & $makensis /DVERSION="$env:VERSION" /DVERSION_NUMERIC="$env:VERSION_NUMERIC" `
+            /DSTAGE="$stageAbs" /DICON="$icoAbs" /DOUTFILE="$outAbs" `
+            packaging\windows\installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
+
+      # ---------------- macOS: .app bundle (icns) zipped -------------------
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
         run: |
-          stage="dist/cyberlexi-${{ github.ref_name }}-${{ matrix.artifact }}"
+          set -euo pipefail
+          APP="dist/CyberLexi.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/release/cyberlexi "$APP/Contents/MacOS/"
+          cp -R assets "$APP/Contents/MacOS/assets"
+          cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION_NUMERIC" "$APP/Contents/Info.plist"
+
+          # iconset -> icns using only macOS built-ins (sips + iconutil)
+          ISET="dist/cyberlexi.iconset"
+          mkdir -p "$ISET"
+          src="packaging/icon/cyberlexi.png"
+          for spec in "16 icon_16x16" "32 icon_16x16@2x" "32 icon_32x32" "64 icon_32x32@2x" \
+                      "128 icon_128x128" "256 icon_128x128@2x" "256 icon_256x256" "512 icon_256x256@2x" \
+                      "512 icon_512x512" "1024 icon_512x512@2x"; do
+            px="${spec%% *}"; name="${spec##* }"
+            sips -z "$px" "$px" "$src" --out "$ISET/$name.png" >/dev/null
+          done
+          iconutil -c icns "$ISET" -o "$APP/Contents/Resources/cyberlexi.icns"
+
+          chmod +x "$APP/Contents/MacOS/cyberlexi"
+          # arm64 macOS refuses unsigned executables; ad-hoc sign the binary so
+          # it launches. (Bundle-level signing is skipped: assets live under
+          # MacOS/ next to the exe, which codesign treats as code territory.)
+          codesign --force --sign - "$APP/Contents/MacOS/cyberlexi"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/cyberlexi-$VERSION-macos-arm64.zip"
+
+      # ---------------- Linux: portable tar.gz + .desktop ------------------
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          stage="dist/cyberlexi-$VERSION-linux-x64"
           mkdir -p "$stage"
           cp target/release/cyberlexi "$stage/"
           cp -R assets "$stage/assets"
-          tar -czf "dist/cyberlexi-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C dist "$(basename "$stage")"
+          cp packaging/linux/cyberlexi.desktop "$stage/"
+          cp packaging/icon/cyberlexi-256.png "$stage/cyberlexi.png"
+          chmod +x "$stage/cyberlexi"
+          tar -czf "dist/cyberlexi-$VERSION-linux-x64.tar.gz" -C dist "$(basename "$stage")"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.artifact }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*-setup.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # Single release job: gather every platform's artifacts and publish once
+  # (avoids concurrent jobs racing to create/update the same Release).
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: dist
+
+      - name: List artifacts
+        run: ls -la dist
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/*.zip
-            dist/*.tar.gz
+          tag_name: ${{ github.ref_name }}
+          name: CyberLexi ${{ github.ref_name }}
+          files: dist/*
           generate_release_notes: true
+          fail_on_unmatched_files: false
